@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LSP Converter</title>
+<link rel="icon" href="/img/favicon-32.png">
+<link rel="stylesheet" href="/app.css">
+<script>
+// Apply the saved theme before first paint, so there is no flash of the
+// default accent on every load.
+// ⚠ The server injects the saved theme into __LSP_THEME__ below. It has to,
+// because localStorage cannot be relied on across an update: ui._storage_path
+// deletes the whole WebView2 profile whenever the version changes (to avoid
+// painting yesterday's JS), which took the chosen accent with it every time.
+var t = '__LSP_THEME__';
+try {
+  t = localStorage.getItem('lsp.theme') || t;
+} catch (e) {}
+// Black is the default (no data-theme); Ivory is the only other ground (app.css)
+if (t === 'ivory') document.documentElement.dataset.theme = 'ivory';
+</script>
+</head>
+<body>
+
+<!-- The roller door: down when the app opens, up on a click or a key
+     (16-paint.js). In the HTML, not built by a script, so it covers the
+     app from the first paint. Shed steel on both grounds: it is a door. -->
+<div id="door" role="button" tabindex="0" aria-label="Open the garage door">
+  <!-- what's on the door: scratches and splats are added by 16-paint.js -->
+  <div class="door-art" aria-hidden="true">
+    <div class="door-paint"></div>
+    <span class="door-worn door-tag">Send it.</span>
+    <!-- three stickers in a row bottom left, on the same slant as "Send it."
+         bottom right, mirrored -->
+    <div class="door-stickers">
+      <img class="door-worn door-sticker s-shush" src="/img/sticker-shush.png" alt="">
+      <img class="door-worn door-sticker s-pony" src="/img/sticker-megapony.png" alt="">
+      <img class="door-worn door-sticker s-ql" src="/img/sticker-quiet-line.png" alt="">
+    </div>
+  </div>
+  <div class="door-face">
+    <img src="/img/crest.png" alt="La Shush Performance">
+    <div class="display">Built by hunger.<span class="l2">Improved with love.</span></div>
+    <span class="eyebrow door-hint">Click to open</span>
+  </div>
+  <div class="door-foot" aria-hidden="true"><i></i></div>
+</div>
+
+<!-- Sidebar shell (2026-10 redesign): #sections / #sections2 are built by
+     buildSections(), #subnav by paintNav, #sidestat by paintSideStat. -->
+<aside class="side" aria-label="LSP Converter">
+  <a class="brand" id="brand" role="link" tabindex="0" title="lashushperformance.com" aria-label="La Shush Performance website">
+    <!-- The LSP monogram, the guideline's mark for tool chrome, never inside
+         a circle, and the company's name under it as the crest letters it:
+         LA SHUSH wide and heavy, PERFORMANCE spaced out (app.css .word). The
+         app's own name is in the header eyebrow, so not here. The founders'
+         vector, as is (native/icons/masters/mono-gold.svg): gold on Black,
+         black on Ivory (app.css --mark). -->
+    <span class="mark" aria-hidden="true"><svg viewBox="0 0 1043 351"><path d="M159 4 L322 4 L168 273 L468 273 L482 239 L250 239 L243.6 231 L303 132 L360 88 L1005 88 Q1040 88 1040 118 L980 210 Q965 239 930 239 L760 239 L694 344 L585 344 L661 228 L610 173 L901 173 L916 149 L413 149 L399 173 L548 173 L624 229 L570 310 Q552 343 515 343 L2 347 L183 28 Z"/></svg></span>
+    <span class="word" aria-hidden="true"><b>La Shush</b><i>Performance</i></span>
+  </a>
+  <nav id="sections" aria-label="Sections"></nav>
+  <div class="side-fill"></div>
+  <nav id="sections2" aria-label="Settings and diagnostics"></nav>
+  <div id="sidestat" class="side-stat" aria-live="polite"></div>
+</aside>
+<main>
+  <header>
+    <span class="eyebrow">LSP Converter</span>
+    <div class="bar">
+      <h1 id="ttl"></h1>
+      <!-- pages within the current section -->
+      <nav id="subnav" hidden></nav>
+      <div class="grow"></div>
+      <div id="hdr" class="row"></div>
+      <div id="themebtn" class="themeswitch" role="group" aria-label="Theme: Black or Ivory"></div>
+    </div>
+    <div class="sub" id="sub" hidden></div>
+  </header>
+  <div class="page" id="page"></div>
+  <footer id="lspfoot"><a href="https://lashushperformance.com" title="lashushperformance.com">La Shush Performance</a><span id="lspsect"></span></footer>
+</main>
+<script>
+// footer furniture: the current section's name on the right, from the title
+(function () {
+  var t = document.getElementById('ttl'), s = document.getElementById('lspsect');
+  if (!t || !s || !window.MutationObserver) return;
+  var put = function () { s.textContent = t.textContent; };
+  new MutationObserver(put).observe(t, { childList: true, characterData: true, subtree: true });
+  put();
+})();
+</script>
+
+<div id="dropveil"><div>Drop an Assetto Corsa mod archive to convert it</div></div>
+<div id="toast"></div>
+<script>
+window.addEventListener('error', function (e) {
+  var p = document.getElementById('page');
+  if (p && !p.dataset.booted) {
+    p.innerHTML = '<div class="err"><b>UI script failed</b><br>'
+      + String(e.message || e) + '</div>';
+  }
+});
+</script>
+<!-- The UI, as ordered classic scripts sharing one global scope (not ES
+     modules: the pages call each other and the router rebinds them by
+     name). ORDER MATTERS only in that 15-nav.js, which boots the app,
+     comes last. -->
+<script src="/js/01-core.js"></script>
+<script src="/js/08-settings.js"></script>
+<script src="/js/13-stats.js"></script>
+<script src="/js/14-logs.js"></script>
+<script src="/js/14c-convert.js"></script>
+<script src="/js/14d-about.js"></script>
+<script src="/js/14e-drift.js"></script>
+<script src="/js/15-nav.js"></script>
+<script src="/js/16-paint.js"></script>
+</body>
+</html>

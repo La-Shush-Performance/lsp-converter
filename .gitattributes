@@ -1,0 +1,7 @@
+# shell scripts run under sh: LF whatever core.autocrlf says
+*.sh text eol=lf
+converter/data/*.tsv text eol=lf
+converter/stockstats/*.json text eol=lf
+converter/tools/*.tsv text eol=lf
+# written by the build (tauri) with LF: checked out the same, or every build leaves them "changed"
+native/gen/schemas/*.json text eol=lf

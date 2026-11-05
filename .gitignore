@@ -1,0 +1,52 @@
+# --- user data and machine-specific state -----------------------------------
+# Settings, logs, caches. Never someone else's business.
+data/
+config.json
+
+# ⚠ NEVER COMMIT THESE ---------------------------------------------------------
+# Protobuf descriptors are extracted from the user's OWN game binary by the
+# phys_json dev tool (see native/src/protos.rs). They are derived from Kunos'
+# executable, so they are not ours to redistribute.
+**/protos/
+*.desc
+
+# Keys are made per machine. A private key in a public repo is the same key
+# for every user, which is no security at all.
+**/certs/
+*.pem
+*.key
+
+# Game binaries and content. This project reads the user's install; it does
+# not ship one.
+*.kspkg
+# Kunos .table files
+tools/system/
+AssettoCorsaEVOServer*.exe
+AssettoCorsaEVO.exe
+
+# --- build output -------------------------------------------------------------
+dist/
+dist-native/
+build_tmp/
+__pycache__/
+*.pyc
+
+# Claude Code's local settings and worktrees
+.claude/
+
+# --- scratch ------------------------------------------------------------------
+*.tmp
+*.bak
+# ⚠ `*.bak` does NOT catch these: a suffixed backup like
+# app.js.bak_carpolicy is a different name, and three of them very
+# nearly went into a release commit.
+*.bak_*
+*.log
+verify_out/
+
+# the converter ships its own data tables (the data/ rule above is for runtime data)
+!converter/data/
+
+# ACECM's 3D viewer (evoview.exe) has no licence we can pass on: never commit
+# a copy (LEGAL-REVIEW.md).
+tools/evoview.exe

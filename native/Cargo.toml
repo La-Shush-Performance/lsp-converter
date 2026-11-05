@@ -1,0 +1,59 @@
+[package]
+name = "lsp-converter"
+version = "1.0.0"
+edition = "2021"
+description = "LSP Converter - AC1 to AC EVO car converter (fork of ACECM's native shell)"
+license = "GPL-3.0-or-later"
+# the public source; the About page links this release's tag (vX.Y.Z) in it
+repository = "https://github.com/La-Shush-Performance/lsp-converter"
+publish = false
+default-run = "lsp-converter"
+
+# the code still calls itself `acecm::` (ACECM's crate name)
+[lib]
+name = "acecm"
+path = "src/lib.rs"
+
+[features]
+# The phys_json dev tool (src/bin/phys_json.rs): the game's message schemas, read from the
+# user's own AssettoCorsaEVO.exe into the data folder. Never part of the app (LEGAL-REVIEW.md).
+dev-schemas = ["dep:prost", "dep:prost-types", "dep:prost-reflect"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+flate2 = "1"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "time", "sync", "fs", "io-util"] }
+# only ever asks this PC (a second launch finding the first): no TLS
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+futures-util = "0.3"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = { version = "0.4", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+flate2 = "1"
+# the phys_json dev tool (dev-schemas)
+prost = { version = "0.13", optional = true }
+prost-types = { version = "0.13", optional = true }
+prost-reflect = { version = "0.14", features = ["serde"], optional = true }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }
+winreg = "0.55"
+
+[[bin]]
+name = "phys_json"
+path = "src/bin/phys_json.rs"
+required-features = ["dev-schemas"]

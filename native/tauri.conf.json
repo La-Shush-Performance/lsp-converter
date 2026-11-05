@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LSP Converter",
+  "version": "1.0.0",
+  "identifier": "com.lashushperformance.lspconverter",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "publisher": "La Shush Performance",
+    "copyright": "LSP Converter by La Shush Performance, a modified fork of ACECM. Copyright (C) 2026 ACECM contributors and La Shush Performance. Free software under GNU GPL v3 or later; see LICENSE.txt."
+  }
+}

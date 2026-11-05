@@ -1,0 +1,592 @@
+/* =====================================================================
+   LSP Converter: the whole look, in one stylesheet (Nov 2026 redesign).
+   Replaces ACECM's style.css and the redesign / skin / brand layers that
+   were stacked on it. Built from the La Shush Performance guideline v0.5
+   (La Shush Performance's own brand assets).
+
+   - Black is home: Shed Black ground, Graphite panels, Steel 1px rules,
+     Bone text, Ash secondary. Signal Yellow is the one action colour
+     (buttons with black text, the current selection, line two of a
+     headline). LSP Gold only on the mark. Optimal / Beyond the limit are
+     tool states, never decoration.
+   - Ivory is the reverse ground: Shed Black type, yellow only as a fill,
+     warm-grey rules, ink-gold labels. Never yellow or gold text on Ivory.
+   - Inter for everything, JetBrains Mono 600 for data, Saira only in the
+     wordmark. All three are bundled in web/fonts (SIL OFL, licences beside
+     them and in THIRD-PARTY-NOTICES.txt): variable, Latin only, from
+     Fontsource 5.1.0.
+   - Square corners, 1px rules, no shadows on panels or type. The yellow
+     outline marks the single most important box. No chequer strips (the
+     user's call, Nov 2026). Numbers only where order matters.
+   Hex values are the guideline's provisional ones: recheck against v1.
+   ===================================================================== */
+
+/* ---- fonts ------------------------------------------------------------ */
+@font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;
+  src:url("/fonts/inter-wght-normal.woff2") format("woff2")}
+@font-face{font-family:"Inter";font-style:italic;font-weight:100 900;font-display:swap;
+  src:url("/fonts/inter-wght-italic.woff2") format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;
+  src:url("/fonts/jetbrains-mono-wght-normal.woff2") format("woff2")}
+/* the wordmark only: wide italic, as the crest's lettering */
+@font-face{font-family:"Saira";font-style:italic;font-weight:100 900;font-stretch:50% 125%;font-display:swap;
+  src:url("/fonts/saira-standard-italic.woff2") format("woff2")}
+
+/* ---- tokens ----------------------------------------------------------- */
+:root{
+  --shed:#0A0A0A; --graphite:#141414; --steel:#262626;
+  --bone:#EEE9DF; --ash:#8A857C; --signal:#F5C400; --lsp-gold:#C9A24A;
+  --optimal:#3DBE6B; --beyond:#E5484D;
+  /* Quiet Line Blue: only for The Quiet Line's own things (the Drift game,
+     its Drift Shed tab in the sidebar) */
+  --quiet-line:#5B9BE6; --quiet-line-ink:var(--quiet-line);
+
+  --bg:var(--shed); --side:#0D0D0D; --panel:var(--graphite);
+  --panel2:#1A1A1A; --panel3:#222222; --well:#0F0F0F;
+  --line:var(--steel); --line2:#333333;
+  --fg:var(--bone); --dim:var(--ash); --dim2:#6E6A62;
+  /* the picture well behind car renders: plain dark grey on both grounds */
+  --render:#1C1C1C;
+  /* yellow as TEXT or a thin LINE (ink gold on Ivory); yellow as a FILL is
+     always --signal */
+  --ink-accent:var(--signal); --mark:var(--lsp-gold);
+  /* names the page scripts use */
+  --accent:var(--signal); --accent2:#D9AE00; --on-accent:var(--shed);
+  --gold:var(--lsp-gold); --red:var(--beyond); --ok:var(--optimal);
+  --veil:rgba(5,5,5,.72);
+
+  --ui:"Inter","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --display:"Inter","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono","Consolas",ui-monospace,monospace;
+  --logo:"Saira","Bahnschrift","Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+:root[data-theme="ivory"]{
+  --ivory:#FAF6EC; --warm-grey:#DCD4C3; --ink-gold:#7A5A12;
+  --bg:var(--ivory); --side:#F5F0E3;
+  --graphite:#F3EDE0; --panel:#F3EDE0; --panel2:#EDE6D7; --panel3:#E6DECD; --well:var(--ivory);
+  --steel:var(--warm-grey); --line:var(--warm-grey); --line2:#CFC5B0;
+  --bone:var(--shed); --fg:var(--shed); --ash:#5F5A51; --dim:#5F5A51; --dim2:#7A746A;
+  --ink-accent:var(--ink-gold); --mark:var(--shed);
+  --accent:var(--ink-gold); --gold:var(--ink-gold);
+  --optimal:#23864A; --beyond:#C8373C; --ok:var(--optimal); --red:var(--beyond);
+  --quiet-line-ink:#2E6DB8;
+  --veil:rgba(40,36,28,.45);
+  color-scheme:light;
+}
+
+/* ---- base ---------------------------------------------------------------- */
+*,*::before,*::after{box-sizing:border-box;border-radius:0}
+html,body{height:100%;margin:0}
+body{display:flex;overflow:hidden;background:var(--bg);color:var(--fg);
+  font:400 14px/1.5 var(--ui);-webkit-font-smoothing:antialiased}
+[hidden]{display:none !important}
+a{color:var(--fg);text-decoration-color:var(--ink-accent);cursor:pointer}
+b,strong{font-weight:600}
+p{margin:0 0 12px}
+code,kbd,.mono,.ver,.id{font-family:var(--mono);font-weight:600;font-variant-numeric:tabular-nums}
+::selection{background:var(--signal);color:var(--shed)}
+:focus-visible{outline:2px solid var(--ink-accent);outline-offset:1px}
+
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line2);border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:var(--ash)}
+
+/* ---- type ------------------------------------------------------------------ */
+/* eyebrow: Medium caps, +32 % */
+.eyebrow,th,.stat span,label.f > span,.side-stat .ver{
+  font:500 11px/1.3 var(--ui);text-transform:uppercase;letter-spacing:.32em;color:var(--dim)}
+.eyebrow{color:var(--ink-accent)}
+/* display: Black Italic caps, -4.5 %, ends in a full stop */
+.display{font:italic 900 34px/.92 var(--display);text-transform:uppercase;
+  letter-spacing:-.045em;color:var(--fg);margin:0}
+/* line two of the signature headline: yellow on Black, a yellow bar on Ivory */
+.l2{display:block;color:var(--signal)}
+:root[data-theme="ivory"] .l2{display:table;color:var(--shed);background:var(--signal);padding:0 .12em}
+/* sub-heads: ExtraBold Italic, sentence case */
+.card h2,h3{font:italic 800 17px/1.25 var(--display);margin:0 0 14px;color:var(--fg)}
+.card h2 .num{font:600 12px/1 var(--mono);font-style:normal;color:var(--ink-accent);
+  margin-right:10px;vertical-align:2px;letter-spacing:.04em}
+.dim{color:var(--dim)}
+.tiny{font-size:12px;line-height:1.45}
+.ok,.good,.pass{color:var(--optimal)}
+.bad,.fail{color:var(--beyond)}
+
+/* ---- the sidebar ------------------------------------------------------------ */
+.side{width:220px;flex:none;display:flex;flex-direction:column;background:var(--side);
+  border-right:1px solid var(--steel);padding:22px 0 0;overflow:auto}
+.side .brand{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:4px 22px 26px;
+  cursor:pointer;text-decoration:none}
+/* the LSP monogram (1043 x 351): tool chrome, never inside a circle */
+.side .mark{width:104px;height:35px;flex:none}
+.side .mark svg{display:block;width:100%;height:100%}
+.side .mark svg path{fill:var(--mark)}
+/* under it, the company's name as the crest letters it, the monogram's
+   width: LA SHUSH in the mark's colour, wide and heavy (Saira, the wordmark
+   font); PERFORMANCE light and spaced out to the same width */
+.side .word{display:flex;flex-direction:column;gap:5px;width:104px;user-select:none}
+.side .word b{font:italic 900 18.9px/1 var(--logo);font-stretch:125%;text-transform:uppercase;
+  white-space:nowrap;color:var(--mark)}
+/* (the negative margin takes off the space after the last letter) */
+.side .word i{font:italic 500 8px/1 var(--logo);font-stretch:110%;text-transform:uppercase;
+  letter-spacing:.5em;margin-right:-.5em;white-space:nowrap;color:var(--fg)}
+#sections,#sections2{display:flex;flex-direction:column;padding:0 10px;gap:2px}
+#sections2{padding-bottom:12px}
+#sections a,#sections2 a{display:flex;align-items:center;gap:12px;padding:10px 12px;
+  color:var(--dim);font:500 13.5px/1.2 var(--ui);text-decoration:none;user-select:none;
+  border-left:2px solid transparent}
+#sections a svg,#sections2 a svg{flex:none;opacity:.85}
+#sections a:hover,#sections2 a:hover{background:var(--panel2);color:var(--fg)}
+#sections a.on,#sections2 a.on{background:var(--graphite);color:var(--fg);border-left-color:var(--signal)}
+#sections a.on svg,#sections2 a.on svg{color:var(--ink-accent);opacity:1}
+/* Drift Shed, The Quiet Line's game, in its blue: words, icon and the bar */
+#sections2 a[data-section="drift"],#sections2 a[data-section="drift"]:hover,
+#sections2 a[data-section="drift"].on svg{color:var(--quiet-line-ink)}
+#sections2 a[data-section="drift"] svg{opacity:1}
+#sections2 a[data-section="drift"].on{color:var(--quiet-line-ink);border-left-color:var(--quiet-line)}
+/* Convert is the app: the main section reads larger */
+#sections a{font:italic 800 15px/1.2 var(--display);padding:12px}
+.side-fill{flex:1;display:flex;flex-direction:column;justify-content:flex-end}
+/* the gap's two quiet things (01-core.js): what the converter is doing,
+   under Convert, while it converts; the early-version note above More */
+.side-job{display:flex;flex-direction:column;gap:3px;margin:6px 20px 0 22px;padding:8px 0 8px 12px;
+  border-left:2px solid var(--steel);text-decoration:none;color:var(--dim);cursor:pointer;min-width:0}
+.side-job:hover{color:var(--fg)}
+.side-job:hover .sj-meta{color:var(--fg)}
+.side-job .sj-head{font:500 10px/1.2 var(--ui);text-transform:uppercase;letter-spacing:.24em;color:var(--dim2)}
+.side-job.run .sj-head{color:var(--ink-accent)}
+.side-job.ok .sj-head{color:var(--ok)}
+.side-job.bad .sj-head{color:var(--red)}
+.side-job .sj-name{font:600 12.5px/1.3 var(--mono);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side-job .sj-meta{font:500 11px/1.3 var(--ui);color:var(--dim)}
+.side-job .sj-bar{position:relative;height:2px;margin-top:5px;background:var(--steel);overflow:hidden}
+.side-job .sj-bar i{position:absolute;top:0;bottom:0;left:0;width:35%;background:var(--signal);animation:sjmove 1.6s ease-in-out infinite}
+@keyframes sjmove{from{transform:translateX(-100%)}to{transform:translateX(290%)}}
+@media (prefers-reduced-motion:reduce){.side-job .sj-bar i{animation:none;width:100%;opacity:.6}}
+.side-note{margin:0 20px 18px 22px;font:400 11px/1.55 var(--ui);color:var(--dim2)}
+.side-note a.ext{color:var(--dim);text-decoration-color:var(--steel)}
+.side-note a.ext:hover{color:var(--fg)}
+#sections2::before{content:"More";display:block;padding:0 12px 8px;
+  font:500 10px/1 var(--ui);text-transform:uppercase;letter-spacing:.32em;color:var(--dim2)}
+.side-stat{border-top:1px solid var(--steel);padding:14px 20px 16px}
+.side-stat .ver{font-family:var(--mono);font-weight:600;letter-spacing:.08em;color:var(--dim)}
+.side-stat .ed{font:500 10px/1.4 var(--ui);letter-spacing:.2em;text-transform:uppercase;
+  color:var(--ink-accent);margin-top:4px}
+
+/* ---- the header ------------------------------------------------------------ */
+main{flex:1;min-width:0;display:flex;flex-direction:column;height:100vh}
+header{position:relative;padding:20px 32px 0;background:var(--bg)}
+header .eyebrow{display:block;margin:0 0 8px}
+header .bar{display:flex;align-items:flex-end;gap:16px;padding-bottom:18px}
+header .grow{flex:1}
+#ttl{font:italic 900 34px/.9 var(--display);text-transform:uppercase;letter-spacing:-.045em;margin:0;color:var(--fg)}
+#ttl:not(:empty)::after{content:".";color:var(--ink-accent)}
+header .sub{color:var(--dim);font-size:13px;margin:-10px 0 16px}
+/* a plain 1px rule under the header (the chequer strip that was here is
+   gone: the user's call), and the garage door's paint dripping along its
+   top edge, behind the title (isolation keeps it above the header's own
+   ground) */
+header{isolation:isolate;border-bottom:1px solid var(--steel)}
+header::before{content:"";position:absolute;z-index:-1;inset:0 0 auto;height:90px;pointer-events:none;
+  background:url("/img/garage-paint.webp") 0 0/990px auto repeat-x;opacity:.5}
+:root[data-theme="ivory"] header::before{opacity:.38}
+#subnav{display:flex;gap:2px}
+#subnav a{padding:6px 12px;color:var(--dim);font-size:13px;border-bottom:2px solid transparent;cursor:pointer}
+#subnav a.on{color:var(--fg);border-bottom-color:var(--signal)}
+#hdr:empty{display:none}
+
+/* the Black / Ivory switch, as at the top of every guideline chapter */
+.themeswitch{display:flex;flex:none;border:1px solid var(--line);align-self:center}
+.themeswitch button{background:none;border:0;padding:7px 11px;cursor:pointer;
+  font:500 10px/1 var(--ui);letter-spacing:.32em;text-transform:uppercase;color:var(--dim)}
+.themeswitch button:hover{background:var(--panel2);color:var(--fg)}
+.themeswitch button.on,.themeswitch button.on:hover{background:var(--signal);color:var(--shed)}
+
+/* ---- the page and its furniture ---------------------------------------------- */
+.page{flex:1;overflow:auto;padding:24px 32px 32px}
+.page > *{max-width:1480px}
+#lspfoot{display:flex;justify-content:space-between;gap:16px;padding:12px 32px;
+  border-top:1px solid var(--steel);font:500 10px/1.2 var(--ui);color:var(--dim2);
+  text-transform:uppercase;letter-spacing:.32em}
+#lspfoot a{color:inherit;text-decoration:none}
+#lspfoot a:hover{color:var(--fg)}
+/* a link out of the app (01-core.js extLink): opens in the browser */
+a.ext{text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}
+a.ext:hover{color:var(--ink-accent)}
+.empty{padding:48px 20px;text-align:center;color:var(--dim)}
+
+/* ---- surfaces --------------------------------------------------------------- */
+.card{background:var(--graphite);border:1px solid var(--steel);padding:20px 22px;margin:0 0 16px}
+.card .card{background:var(--panel2)}
+.card > p,.card > .dim:not(.tiny){max-width:68ch}
+.card.key,.key{border-color:var(--ink-accent)}
+.err{padding:12px 14px;color:var(--fg);border:1px solid var(--beyond);
+  background:color-mix(in srgb,var(--graphite) 88%,var(--beyond) 12%)}
+.list{border:1px solid var(--steel)}
+table{border-collapse:collapse;width:100%}
+th{text-align:left;padding:8px 10px;border-bottom:1px solid var(--steel)}
+td{padding:8px 10px;border-bottom:1px solid var(--steel)}
+tr:last-child td{border-bottom:0}
+
+/* layout helpers the pages use */
+.row{display:flex;align-items:center;gap:8px}
+.row.wrap{flex-wrap:wrap}
+.grow{flex:1;min-width:0}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+
+/* stat tiles */
+.stats{display:flex;flex-wrap:wrap;gap:10px}
+.stat{display:flex;flex-direction:column;gap:6px;min-width:130px;padding:14px 16px;
+  background:var(--panel2);border:1px solid var(--steel)}
+.stat b{font:italic 900 26px/1 var(--display);letter-spacing:-.02em;color:var(--fg)}
+.stat span{letter-spacing:.14em;line-height:1.5}
+.stat b.mono{font:600 20px/1.1 var(--mono);font-style:normal}
+
+/* found / not found rows (Settings) */
+.chk{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--steel)}
+.chk:last-child{border-bottom:0}
+.chk .name{flex:1;min-width:0;font-weight:600}
+.chk .name .tiny{font-weight:400;font-family:var(--mono);font-size:11.5px;margin-top:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:4px 10px;flex:none;
+  border:1px solid var(--steel);background:var(--panel2);color:var(--dim);
+  font:500 11px/1.2 var(--ui);white-space:nowrap}
+.pill .dot{width:7px;height:7px;background:currentColor;flex:none}
+.pill.on{color:var(--optimal)}
+.pill.off{color:var(--beyond)}
+
+/* the long text boxes: logs, converter output, licences */
+pre.log{margin:0;padding:14px 16px;overflow:auto;white-space:pre;background:var(--well);
+  border:1px solid var(--steel);color:var(--fg);font:400 12px/1.55 var(--mono)}
+
+details > summary{cursor:pointer;user-select:none;list-style:none}
+details > summary::-webkit-details-marker{display:none}
+details > summary::before{content:"";display:inline-block;width:0;height:0;margin-right:9px;vertical-align:1px;
+  border-left:5px solid var(--dim);border-top:4px solid transparent;border-bottom:4px solid transparent;
+  transition:transform .12s}
+details[open] > summary::before{transform:rotate(90deg)}
+
+/* ---- controls --------------------------------------------------------------- */
+button{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:9px 16px;background:var(--panel2);border:1px solid var(--line2);color:var(--fg);
+  font:500 13px/1.2 var(--ui);cursor:pointer;white-space:nowrap}
+button:hover{background:var(--panel3);border-color:var(--ash)}
+button.sm{padding:6px 11px;font-size:12.5px}
+button.primary{background:var(--signal);border-color:var(--signal);color:var(--shed);font-weight:700}
+button.primary:hover{background:var(--accent2);border-color:var(--accent2)}
+button:disabled,button:disabled:hover{opacity:.42;cursor:not-allowed;background:var(--panel2);
+  border-color:var(--line2);color:var(--fg)}
+button.primary:disabled,button.primary:disabled:hover{background:var(--signal);border-color:var(--signal);color:var(--shed)}
+input,select,textarea{background:var(--well);border:1px solid var(--line2);color:var(--fg);
+  font:400 13px/1.3 var(--ui);padding:8px 10px;min-width:0}
+input::placeholder{color:var(--dim2)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--ink-accent)}
+input[type=checkbox],input[type=radio]{accent-color:var(--signal);width:15px;height:15px;margin:0;padding:0;cursor:pointer}
+label.f{display:flex;flex-direction:column;gap:7px}
+label.f input{width:100%;font-family:var(--mono);font-size:12.5px}
+
+/* segmented choices: one box, the current one filled yellow */
+.seg{display:inline-flex;border:1px solid var(--line2)}
+.seg > button{border:0;background:none;color:var(--dim);padding:7px 13px;font-size:12.5px}
+.seg > button + button{border-left:1px solid var(--line2)}
+.seg > button:hover{background:var(--panel2);color:var(--fg)}
+.seg > button.on,.seg > button.on:hover{background:var(--signal);color:var(--shed);font-weight:600}
+
+/* ---- overlays ------------------------------------------------------------- */
+#toast{position:fixed;right:24px;bottom:24px;z-index:60;max-width:440px;padding:12px 16px;
+  background:var(--graphite);border:1px solid var(--steel);border-left:3px solid var(--signal);
+  color:var(--fg);font-size:13px;opacity:0;transform:translateY(8px);pointer-events:none;
+  transition:opacity .16s,transform .16s}
+#toast.show{opacity:1;transform:none}
+#dropveil{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;
+  background:var(--veil);padding:28px}
+#dropveil.on{display:flex}
+#dropveil div{width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+  border:2px dashed var(--signal);font:italic 900 28px/1.1 var(--display);text-transform:uppercase;
+  letter-spacing:-.03em;color:var(--fg);text-align:center;padding:20px}
+#dropprog{position:fixed;left:50%;bottom:28px;z-index:65;width:min(520px,calc(100vw - 48px));
+  transform:translateX(-50%);display:none;padding:16px 18px;background:var(--graphite);border:1px solid var(--steel)}
+#dropprog.on{display:block}
+#dropprog .dp-what{font-weight:600;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#dropprog .dp-track{height:6px;background:var(--steel);overflow:hidden}
+#dropprog .dp-bar{height:100%;width:0;background:var(--signal);transition:width .2s}
+#dropprog .dp-bar.indet{background:repeating-linear-gradient(90deg,var(--signal) 0 24px,transparent 24px 40px);
+  animation:dpmove 1s linear infinite}
+@keyframes dpmove{to{background-position:40px 0}}
+#dropprog .dp-detail{margin-top:8px}
+.pk-veil{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
+  background:var(--veil);padding:24px}
+.pk-box{width:min(480px,100%);background:var(--graphite);border:1px solid var(--steel);
+  border-top:3px solid var(--signal);padding:22px 24px 18px}
+.ask-msg{white-space:pre-wrap;font-size:14px;line-height:1.55}
+.ask-row{justify-content:flex-end;margin-top:20px}
+/* the terms, once per app version (16-paint.js): over everything, the door included */
+.terms-veil{z-index:120}
+.terms-box{width:min(560px,100%);max-height:calc(100vh - 48px);overflow:auto}
+.terms-box h2{margin:4px 0 12px}
+.terms-quote{margin:0 0 12px;padding:12px 14px;border-left:3px solid var(--lsp-gold);
+  background:var(--well);font-size:14px;line-height:1.55}
+.terms-box .linkish{background:none;border:0;padding:0;color:var(--ink-accent);font:inherit;
+  font-size:13px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.terms-full{max-height:42vh;overflow:auto;margin:10px 0 0;padding:4px 14px 10px;
+  background:var(--well);border:1px solid var(--steel);font-size:12.5px;line-height:1.55}
+.terms-full h3{font-size:15px;margin:10px 0 2px}
+.terms-full h4{font-size:12.5px;margin:14px 0 4px;color:var(--ink-accent)}
+.terms-full p{margin:0 0 8px}
+.terms-full ul{margin:0 0 8px;padding-left:4px;list-style:none}
+.terms-full li{margin:0 0 4px}
+.terms-row{justify-content:space-between;align-items:center;margin-top:18px}
+/* Continue stays grey until "I agree" is ticked */
+.terms-row button.primary:disabled,.terms-row button.primary:disabled:hover{
+  background:var(--panel3);border-color:var(--line2);color:var(--dim);opacity:1}
+.terms-tick{display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer}
+
+/* ---- Convert (14c-convert.js) ---------------------------------------------- */
+.cv-banner{padding:12px 14px;margin:0 0 14px;border:1px solid var(--beyond);
+  background:color-mix(in srgb,var(--graphite) 90%,var(--beyond) 10%)}
+.cv-modes{margin:0 0 14px}
+/* the library on the left, the car you picked on the right */
+.cv-layout{display:grid;grid-template-columns:minmax(0,1fr) clamp(320px,30vw,400px);gap:16px;align-items:start}
+.cv-side{position:sticky;top:0}
+@media (max-width:900px){.cv-layout{grid-template-columns:minmax(0,1fr)}.cv-side{position:static}}
+
+.cv-head{display:flex;align-items:baseline;gap:12px;margin:0 0 14px}
+.cv-head h2{margin:0}
+.cv-count{margin-left:auto;white-space:nowrap;text-align:right}
+.cv-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.cv-tools .cv-search{flex:1 1 260px;padding-left:32px;
+  background:var(--well) no-repeat 11px 50%/14px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238A857C' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cpath d='M20 20l-4.8-4.8'/%3E%3C/svg%3E")}
+.cv-selrow{margin-top:10px}
+.cv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;
+  margin-top:14px;max-height:calc(100vh - 360px);min-height:320px;overflow:auto;padding:0 4px 2px 0;
+  align-content:start}
+.cv-card{position:relative;cursor:pointer;background:var(--panel2);border:1px solid var(--steel);
+  transition:border-color .12s}
+.cv-card:hover{border-color:var(--ash)}
+.cv-card.sel{border-color:var(--ink-accent)}
+.cv-card.on{border-color:var(--ink-accent);box-shadow:inset 0 0 0 1px var(--ink-accent)}
+.cv-card.on .cv-meta b{color:var(--ink-accent)}
+:root[data-theme="ivory"] .cv-card.on .cv-meta b{color:var(--fg)}
+.cv-card.locked{opacity:.5;cursor:not-allowed}
+.cv-grid.tracks .cv-card.locked{cursor:pointer}
+.cv-img{position:relative;aspect-ratio:16/9;overflow:hidden;background:var(--render) center/cover no-repeat}
+.cv-img > img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cv-tag{position:absolute;z-index:1;top:8px;left:8px;padding:3px 7px;
+  font:600 9.5px/1.2 var(--ui);text-transform:uppercase;letter-spacing:.16em;
+  background:rgba(10,10,10,.82);color:#EEE9DF}
+.cv-tag.ok{background:var(--signal);color:var(--shed)}
+.cv-tag.bad{background:var(--beyond);color:#fff}
+/* "Converted" and the blue "In game" side by side */
+.cv-tags{position:absolute;z-index:1;top:8px;left:8px;display:flex;gap:4px}
+.cv-tags .cv-tag{position:static}
+.cv-tag.ig{background:var(--quiet-line);color:#0A0A0A}
+/* "Update available": one clean band across the picture, bottom left to top right */
+.cv-sash{position:absolute;z-index:1;left:-20%;right:-20%;top:50%;padding:5px 0;
+  transform:translateY(-50%) rotate(-20deg);text-align:center;pointer-events:none;
+  font:600 10px/1.2 var(--ui);text-transform:uppercase;letter-spacing:.22em;
+  background:color-mix(in srgb,var(--signal) 50%,transparent);color:var(--shed)}
+.cv-sel{position:absolute;z-index:2;top:8px;right:8px;width:18px !important;height:18px !important}
+.cv-meta{padding:10px 12px 11px}
+.cv-meta b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv-meta span{display:block;margin-top:2px;font-size:11.5px;color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* the picked car: picture, name, options, the button */
+.cv-side > .card{padding:0;overflow:hidden}
+.cv-side > .card > .cv-head{padding:18px 20px 0}
+.cv-pane{padding:0 20px 20px}
+.cv-hero{display:flex;flex-direction:column;gap:0}
+.cv-hero > .cv-img{margin:0 0 16px;border-top:1px solid var(--steel);border-bottom:1px solid var(--steel)}
+.cv-hero > .grow{padding:0 20px 20px}
+.cv-none{position:absolute;inset:0;display:flex;align-items:center;gap:18px;padding:0 24px;
+  background:var(--panel2)}
+.cv-none img{height:104px;width:auto;flex:none}
+.cv-none::before{content:"";position:absolute;inset:0 0 auto;height:60%;pointer-events:none;
+  background:url("/img/garage-paint.webp") 50% 0/960px auto repeat-x;opacity:.45}
+.cv-none > *{position:relative}
+.cv-none .display{font-size:24px}
+/* several cars at once (14c-convert.js heroPaint): the ticked ones as a
+   mosaic in the picture's place; a running queue's cars as a strip under the
+   one converting - done, converting (ringed), waiting (faded), failed (red) */
+.cv-mosaic{position:absolute;inset:0;display:grid;gap:2px;background:var(--steel)}
+.cv-mosaic > i{background:var(--render) center/cover no-repeat}
+.cv-mosaic > i.more{display:grid;place-items:center;background:var(--panel2);
+  font:italic 900 28px/1 var(--display);color:var(--dim)}
+.cv-strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:12px 0 0}
+.cv-strip > i{width:64px;aspect-ratio:16/9;background:var(--render) center/cover no-repeat;border:1px solid var(--steel)}
+.cv-strip > i.cur{border-color:var(--ink-accent);box-shadow:0 0 0 1px var(--ink-accent)}
+.cv-strip > i.wait{opacity:.4}
+.cv-strip > i.bad{border-color:var(--beyond);opacity:.7}
+.cv-name{font:italic 900 24px/1 var(--display);text-transform:uppercase;letter-spacing:-.035em;
+  color:var(--fg);overflow-wrap:anywhere}
+.cv-hero .tiny.dim{margin-top:8px}
+.cv-opts{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:16px 0;
+  padding:14px 0;border-top:1px solid var(--steel);border-bottom:1px solid var(--steel)}
+.cv-opts label{display:flex;align-items:flex-start;gap:9px;cursor:pointer;line-height:1.4}
+.cv-opts input{margin-top:1px;flex:none}
+.cv-actions{display:flex;flex-wrap:wrap;gap:8px}
+.cv-big{flex:1 1 100%;padding:14px 18px;font:italic 800 16px/1 var(--display);
+  text-transform:uppercase;letter-spacing:.01em}
+.cv-big.primary{font-weight:900}
+details.cv-adv{margin-top:14px}
+details.cv-adv summary{font:500 10.5px/1.3 var(--ui);text-transform:uppercase;letter-spacing:.28em;color:var(--dim)}
+details.cv-adv summary:hover{color:var(--fg)}
+.cv-idrow{margin-top:10px}
+.cv-idrow input{width:100%;font-family:var(--mono);font-size:12px}
+
+/* progress, the check, the queue */
+.cv-prog{padding:0 20px 20px}
+.cv-bar{height:6px;background:var(--steel);overflow:hidden;margin:0 0 10px}
+.cv-bar > div{height:100%;width:0;background:var(--signal);transition:width .5s}
+.cv-prog .row{align-items:flex-start}
+.cv-prog .row .tiny{font-family:var(--mono);font-weight:600}
+.cv-prog pre.log{max-height:30vh;margin-top:8px;font-size:11px}
+.cv-note,.cv-check,.cv-q{margin:12px 0 0;padding:12px 14px;font-size:12.5px;
+  background:var(--panel2);border:1px solid var(--steel)}
+.cv-note label{display:flex;gap:8px;align-items:flex-start;margin-top:8px}
+.cv-check ul,.cv-q ol{margin:8px 0 0 18px;padding:0;overflow:auto}
+.cv-check ul{max-height:9em}
+.cv-q{margin:0 20px 20px}
+.cv-q ol{max-height:14em}
+.cv-q li{margin:2px 0}
+
+/* setup (folded) */
+details.card > summary{display:flex;align-items:center;gap:12px}
+details.card > summary b{font:500 11px/1 var(--ui);text-transform:uppercase;letter-spacing:.32em;color:var(--dim)}
+.cv-setup{display:grid;grid-template-columns:170px minmax(0,1fr) 22px;gap:8px 12px;align-items:center;margin:16px 0}
+.cv-setup input{width:100%;font-family:var(--mono);font-size:12px}
+.cv-setup .yes{color:var(--optimal);font-weight:700}
+.cv-setup .no{color:var(--beyond);font-weight:700}
+
+/* tracks, when the server offers them: stacked in the right-hand pane */
+.cv-chip{border:1px solid var(--line2);background:none;color:var(--dim);padding:4px 10px;font-size:12px}
+.cv-chip.on{border-color:var(--ink-accent);color:var(--fg)}
+.seg > .cv-chip{border:0}
+.seg > .cv-chip + .cv-chip{border-left:1px solid var(--line2)}
+.seg > .cv-chip.on{background:var(--signal);color:var(--shed);font-weight:600}
+.cv-tdet{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;padding:0 20px 20px;overflow-wrap:anywhere}
+.cv-tdet > div:last-child{order:-1}
+.cv-map{width:100%;aspect-ratio:1;background:var(--render) center/contain no-repeat;border:1px solid var(--steel)}
+.cv-lays{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-bottom:12px}
+.cv-lays > .tiny{flex-basis:100%}
+.cv-lay{display:inline-flex;align-items:center;gap:6px}
+.cv-lay.off .cv-chip{opacity:.5}
+.cv-facts{display:grid;grid-template-columns:100px 1fr;gap:4px 10px;font-size:12px}
+.cv-facts > :nth-child(odd){color:var(--dim)}
+.cv-desc{font-size:12px;color:var(--dim);margin-top:10px;max-height:6.5em;overflow:auto;white-space:pre-wrap}
+.cv-files{margin-top:12px;border:1px solid var(--steel);max-height:180px;overflow:auto}
+.cv-files div{display:flex;gap:8px;align-items:center;padding:5px 8px;font-size:11.5px;border-bottom:1px solid var(--steel)}
+.cv-files div:last-child{border-bottom:0}
+.cv-files .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+.cv-files .lock{color:var(--beyond)}
+.cv-src{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:12px}
+.cv-src input{flex:1 1 100%}
+
+/* ---- About (14d-about.js) ---------------------------------------------------- */
+.about-hero{display:flex;gap:32px;align-items:center;padding:32px}
+.about-hero > img{height:168px;width:auto;flex:none}
+.about-hero .display{font-size:40px;margin:10px 0 14px}
+.about-hero .mono{color:var(--dim)}
+@media (max-width:720px){.about-hero{flex-direction:column;align-items:flex-start}}
+
+/* ---- the garage (16-paint.js) ------------------------------------------------ */
+/* The roller door: steel slats, the paint along its top, the crest, the
+   line. Black steel on both grounds. The slats are drawn, not a picture (the
+   brand pack's garage-steel.webp is 700 px wide and blurs on a big window):
+   each 56 px slat is a lit top edge, a face falling into shadow and a dark
+   seam, under a brushed grain (SVG noise stretched sideways), a light from
+   above the crest and the guide rails' shadow at each side. */
+#door{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;cursor:pointer;
+  background:
+    linear-gradient(90deg,rgba(0,0,0,.75),transparent 3%,transparent 97%,rgba(0,0,0,.75)),
+    radial-gradient(ellipse 60% 50% at 50% 40%,rgba(255,244,214,.09),transparent 70%),
+    linear-gradient(180deg,rgba(0,0,0,.5),transparent 16%,transparent 80%,rgba(0,0,0,.55)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.004 .9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    repeating-linear-gradient(180deg,
+      #3a3a3a 0,#262626 1px,#1d1d1d 3px,#171717 14px,#121212 34px,#0c0c0c 48px,
+      #070707 51px,#020202 53px,#2b2b2b 54px,#202020 56px),
+    #0A0A0A;
+  border-bottom:1px solid #000;outline:none}
+#door.up{animation:door-up 1.1s cubic-bezier(.6,0,.3,1) forwards}
+#door.down{animation:door-up .7s cubic-bezier(.4,0,.6,1) reverse}
+@keyframes door-up{0%{transform:none}10%{transform:translateY(8px)}100%{transform:translateY(-101%)}}
+/* Wear, for anything stuck or sprayed on the door: big scuffs where it has
+   rubbed off (low-frequency noise) and fine chips (high-frequency), both
+   SVG noise turned into alpha */
+#door{--wear:
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='320'%3E%3Cfilter id='w' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.035' numOctaves='3' seed='4' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -5.5 0 0 0 5'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23w)'/%3E%3C/svg%3E"),
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='c' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.7' numOctaves='2' seed='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -11 0 0 0 9'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)'/%3E%3C/svg%3E")}
+.door-worn{-webkit-mask-image:var(--wear);mask-image:var(--wear);
+  -webkit-mask-size:320px,160px;mask-size:320px,160px;mask-composite:intersect}
+
+/* everything on the door, behind the crest */
+.door-art{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.door-paint{position:absolute;inset:0 0 auto;height:175px;
+  background:url("/img/garage-paint.webp") 50% 0/1920px auto repeat-x}
+.door-scratch,.door-scratch svg{position:absolute;inset:0;width:100%;height:100%}
+/* grime over the steel and the paint (the stickers went on later and sit
+   above it): dark blotches, dirt run
+   down from the slat seams, dust, the bottom of the door dirtiest */
+.door-art::after{content:"";position:absolute;inset:0;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='d'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='1' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .93 0 0 0 0 .91 0 0 0 0 .87 9 0 0 0 -7.7'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23d)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='700' height='700'%3E%3Cfilter id='s'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.05 .0025' numOctaves='3' seed='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -1.9 0 0 0 1.05'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23s)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='900' height='900'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.004 .007' numOctaves='4' seed='9' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -2.4 0 0 0 1.35'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E"),
+    linear-gradient(0deg,rgba(0,0,0,.55),transparent 24%)}
+
+/* the paint: fixed splats (16-paint.js), a little worn like the rest */
+.door-splat{position:absolute;opacity:.94}
+.door-splat svg{display:block;width:100%;height:100%;overflow:visible}
+
+/* The crew's stickers, die-cut with a Bone edge, a bit faded: Shush, the
+   Megapony and The Quiet Line (the one with the glove), no logos. One row
+   bottom left, sitting on a line that slants as "Send it." does bottom
+   right, mirrored. ⚠ Turned about its low end, the right, and kept 70px up
+   at least: the door's bottom rail (.door-foot, 52px) covers the art. */
+.door-stickers{position:absolute;z-index:1;left:5%;bottom:max(12%,70px);display:flex;align-items:flex-end;
+  gap:clamp(14px,1.6vw,26px);transform:rotate(7deg);transform-origin:100% 100%}
+.door-sticker{display:block;height:auto;
+  filter:saturate(.9) drop-shadow(2.5px 0 0 #EEE9DF) drop-shadow(-2.5px 0 0 #EEE9DF)
+    drop-shadow(0 2.5px 0 #EEE9DF) drop-shadow(0 -2.5px 0 #EEE9DF) drop-shadow(0 4px 5px rgba(0,0,0,.6))}
+.s-shush{width:clamp(66px,7.4vw,116px)}
+.s-pony{width:clamp(62px,7vw,108px)}
+.s-ql{width:clamp(54px,5.8vw,90px)}
+
+/* sprayed through a stencil: "Send it." in outline */
+.door-tag{position:absolute;right:5%;bottom:12%;font:italic 900 clamp(30px,4.4vw,60px)/1 var(--display);
+  text-transform:uppercase;letter-spacing:-.04em;color:transparent;-webkit-text-stroke:2px #EEE9DF;
+  transform:rotate(-7deg);opacity:.85}
+@media (max-width:600px){.door-tag,.door-stickers{display:none}}
+
+/* the crest's two bars, carried up and down the door as a gold coachline:
+   ::before runs from the top to the crest, ::after from the hint to the
+   bottom rail; both grow alike, so the crest and the line stay centred */
+.door-face{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;align-items:center;
+  gap:28px;padding:0 24px;text-align:center}
+.door-face::before,.door-face::after{content:"";flex:1;width:13px;min-height:0;opacity:.85;
+  background:linear-gradient(90deg,var(--lsp-gold) 0 3px,transparent 3px 9px,var(--lsp-gold) 9px 13px)}
+.door-face::after{margin-bottom:10px}
+.door-face img{height:clamp(150px,34vh,320px);width:auto}
+/* the signature headline, always as on Black: it is painted on black steel */
+#door .display{font-size:clamp(28px,4.6vw,54px);color:#EEE9DF}
+#door .l2{display:block;color:var(--signal);background:none;padding:0}
+#door .door-hint{color:#8A857C;animation:door-hint 2.2s ease-in-out infinite}
+#door:hover .door-hint,#door:focus-visible .door-hint{color:var(--signal)}
+@keyframes door-hint{50%{opacity:.35}}
+/* the bottom bar: thicker steel, a rubber seal under it, a pressed handle */
+.door-foot{position:relative;z-index:1;flex:none;height:52px;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(#3a3a3a 0,#232323 2px,#181818 40%,#0e0e0e 86%,#000 87%,#050505)}
+.door-foot i{width:160px;height:12px;margin-top:-6px;
+  background:linear-gradient(#000,#111 60%,#2a2a2a);border:1px solid #050505;
+  border-bottom-color:#3a3a3a}
+
+@media (prefers-reduced-motion:reduce){
+  #door.up{animation:door-fade .3s forwards}
+  #door.down{animation:door-fade .3s reverse}
+  #door .door-hint{animation:none}
+}
+@keyframes door-fade{to{opacity:0}}

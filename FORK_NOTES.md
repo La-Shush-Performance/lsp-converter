@@ -1,0 +1,46 @@
+# LSP Converter: changes from ACECM
+
+LSP Converter is a modified version of ACECM (Assetto Corsa EVO Content Manager) by WhoaThatCombo and the ACECM contributors. This file is the notice of modification that GPL-3.0 section 5(a) asks for: what was changed, and when.
+
+## What is included
+
+- ACECM's `converter/` Rust crate (`aceconv`): the AC1 readers, the car conversion stages, the EVO package writer and the validator.
+- ACECM's desktop shell (`native/`, `web/`), cut down to the converter: the Convert, Settings, Logs and About pages and what they need.
+
+The converter builds from the user's own Assetto Corsa and Assetto Corsa EVO installs. No game content is included.
+
+## Modifications (GPLv3 section 5a)
+
+Modified by La Shush Performance from ACECM commit `18b6d272bddb` (see `converter/UPSTREAM_REV`), as "LSP Converter" (until 31 Oct 2026 the working name was "Shushproof Converter and Builder").
+
+### The app
+
+- 30-31 Oct 2026: everything in ACECM that LSP Converter doesn't use is removed, not just switched off: game and server exe patching, the lobby proxy and stand-in backend, edits to the game's `content.kspkg` (penalties, damage), the Gameface inspector, Drive, servers and the dedicated server, content sharing, the share registry and `.acemod` packages, remote admin, the pit-button hotkey, car pictures and liveries, game settings, the self-updater, ACECM's installer and the Python backend bridge, with their API routes and web pages. Also removed: the 3D viewer (`tools/evoview.exe`, no redistributable licence), ACECM's release and signing tooling (`build.py`, `tools/publish_release.py`, the signing scripts, `.github/workflows/`), its dev scripts and hooks, and the game-derived lists `tools/cars.json` and `tools/events_*.json`. The app's own dependencies drop from 40 crates to 12, and `reqwest` loses its TLS stack.
+- 31 Oct 2026: the app answers only this PC (loopback, `listen` forced to 127.0.0.1) and only its own routes (`server.rs`); it opens no firewall port, publishes nothing and never reads the game's exe. The game-schema reader stays only as the `phys_json` developer tool, built with its own `dev-schemas` feature and never part of the app.
+- 31 Oct 2026: renamed LSP Converter, version 1.0.0: cargo package `lsp-converter` (the library keeps the crate name `acecm`), window title and Windows product name, data folder `%LOCALAPPDATA%\LSP Converter`, log `lsp-converter.log`, app identifier `com.lashushperformance.lspconverter`, publisher La Shush Performance. The web UI moved from `acecm/web` to `web/`. Kept on purpose: ACECM's copyright and credit notices, `converter/UPSTREAM_REV`, the crate name `acecm`, the `ACECM_*` environment variables, the `acecm_track.json` marker and the archive lock's mutex name.
+- 31 Oct 2026: the look: La Shush Performance's icon (`native/icons/masters/`), the Black and Ivory themes in place of ACECM's ten accent themes, and "LSP Converter" in the sidebar, header and page title.
+- 31 Oct 2026: third-party notices. `tools/third-party-notices.ps1` writes `THIRD-PARTY-NOTICES.txt`; the exe bundles it with `LICENSE.txt` and `CREDITS.md`, served at `/legal/...` (`web.rs`), and a new About page shows the version, the GPL and trademark notices and all three files.
+- 31 Oct 2026: the converter refuses Kunos's own AC1 cars (found from the install's own `content\sfx\GUIDs.txt`), CSP-protected models (only the envelope is detected, nothing is decrypted) and tracks (installing a converted track would change the game's `content.kspkg`). The Convert list leaves Kunos's cars out; a search shows them, marked "Kunos car" and not pickable.
+- 2 Nov 2026: the Convert page waits for the first cold scan of the AC1 library instead of giving up after 12 s. A Drift page: a small top-down drift game of our own (`web/js/14e-drift.js`) for while a car converts.
+- 3 Nov 2026: the About page says what the app converts and what it won't, shows the testing behind it (`web/js/13-stats.js`), and gives an email address for bugs and feature requests. The bundled fonts (Inter, JetBrains Mono, Saira) come with their SIL OFL licences.
+- 4 Nov 2026: `aceconv`'s `pack-share` / `unpack-share` commands and `converter/src/share.rs` are removed (with the `zstd` and `liblzma` crates), so nothing in LSP Converter packs a mod for sharing. The About page shows the link to the source of the exact version it is.
+- 4 Nov 2026: the Drift game's circuits are now The OG (the Tsukuba Circuit's 2000 course, its centre line from OpenStreetMap), an oval with a figure 8 through it and a hump where the 8 crosses, and Ribbon; its cars have engine braking, gentler brakes and less understeer, and the grass costs less. The garage door shows the crew's stickers and no logos. The About page counts the hours put in and adds AC1's test laps and sessions to EVO's. The Convert page shows the ticked cars together, and while a queue runs, the car it is converting and the rest of the queue. The app's icon is La Shush Performance's crest.
+- 4 Nov 2026: the sidebar shows LA SHUSH PERFORMANCE under the logo, and the Drift page is called Drift Shed. "Remove from the game" works on all the ticked cars at once, and Delete takes a car out of the Converted list as well as out of the game.
+- 5 Nov 2026: terms of use (`TERMS.md`, bundled with the licence and shown on the About page). The first time the app opens it asks the user to agree, and asks again only when the terms change. Converted cars go straight into the game unless "Install in the game" is unticked. A car card shows "In game" only when the car is really in EVO's mods folder. Cars converted with ACECM or an older build show "Update available". A new option, "Raise a short steering lock", sets a minimum steering lock with a slider.
+- 6 Nov 2026: the About page and README say what La Shush Performance changed in the converter and carry the copyright line. The terms of use say plainly that they don't limit the GPL.
+
+### The converter
+
+- 29-31 Oct 2026: physics, sound and naming fixes. Tyres: an AC1 slick goes onto EVO's racing-slick tyre model only when its AC1 slip curve peaks below 7.75 deg; wider-peaked slicks take the road tyre model with their grip scaled to AC1's. A negative AC1 `LINEAR_STEER_ROD_RATIO` is written the EVO way.
+- 31 Oct 2026: car sound, for AC1 engines that went quiet at low rpm. AC1 layers placed on two parameter sheets keep both ranges (one becomes a trigger condition), and AC1 instrument volumes are read at the strength AC1's runtime plays them, held under the game's +10 dB cap.
+- 1 Nov 2026: handling. AC1's rear / front grip balance is kept when it gives the rear more grip than the EVO template would. A converted car rests where AC1's physics settles it whenever AC1 gives a ROD_LENGTH. Wings fly at AC1's ANGLE, with AC1's setup range, instead of flat. ABS runs at 40 Hz, the stock median. Rule 9 (damping raised to the stock median) applies to the Road profile only.
+- 1-2 Nov 2026: test switches for comparing variants (`ACECONV_PACKERS`, `ACECONV_TYRE_FALLOFF`, `ACECONV_TYRE_PEAK`, `ACECONV_SETUP_WINGS`, `ACECONV_ABS_HZ`, `ACECONV_REAR_STEER`, `ACECONV_TEST_AIDS`, `ACECONV_SOUND_TILT`) and developer tools in `converter/examples/` (`handlingprobe`, `soundprobe`) that compare a converted car with the AC1 original. None changes a default conversion unless it is set.
+- 2 Nov 2026: car mirrors. When `mirrors.ini` lists a door mirror on one side only, the unlisted mesh with the same material at its exact mirror image becomes the other side's mirror.
+- 2 Nov 2026: brakes far stronger than any stock car's come down to a stock strength (`--brakes mod` keeps the mod's). Slicks on the road tyre model keep the racing slicks' steering feel. Liveries: CSP carbon materials draw as carbon; cut-outs, LOD UVs, CSP detail tiling and case-twin textures are handled.
+- 3 Nov 2026: tyres: wide-peaked grippy tyres leave the F1 2004 model; racing slicks keep the AC1 car's brake grip; slicks on another tyre model keep the racing slicks' carcass stiffness. The garage rating is on EVO's scale, fitted to stock cars. Lower detail levels keep stock triangle counts, so car shadows stop flickering. Mirrors, cameras, glass, gearbox, paint and gear-shift sound fixes; parts wholly 3 m clear of the wheels are left out as modelling leftovers; `check-car` allows inboard brake discs on the body.
+- 4 Nov 2026: AC1 ABS in an `[ABS_V2]` section is converted, not dropped. The car's own AC1 ground shadow is used instead of the donor's. Heave springs are carried over from AC1 by default.
+- 5 Nov 2026: the same car builds the same every time (mesh vertices have no hidden padding bytes). Engine sound layers that end the AC1 rpm sheet run on to the top of the game's range, so an over-rev no longer goes silent. An auto-clutch band that engages below idle is raised to the stock floor, so the car no longer bogs from a stop. `--min-lock` raises a short steering lock, never past the stock p90 at the wheels.
+
+## License and attribution
+
+ACECM's converter and desktop application are licensed under GPL-3.0-or-later, and so is LSP Converter. ACECM's licence files and notices are kept (`LICENSE.txt`, `CREDITS.md`, `converter/LICENSE`, `converter/CREDITS.md`). The GPL does not grant rights to redistribute game assets or third-party car mods.
