@@ -8,6 +8,7 @@ const ABOUT_DOCS = [
   ['TERMS.md', 'Terms of use', 'What you agree to when you use LSP Converter'],
   ['THIRD-PARTY-NOTICES.txt', 'Third-party notices', 'Every open-source library inside the app, with its licence'],
   ['LICENSE.txt', 'Licence', 'GNU General Public License, version 3'],
+  ['NOTICE.txt', 'Copyright notices', 'La Shush Performance\'s and ACECM\'s, with ACECM\'s GPL notice'],
   ['CREDITS.md', 'Credits', 'ACECM, its authors, and what came from where'],
 ];
 let aboutDoc = '';

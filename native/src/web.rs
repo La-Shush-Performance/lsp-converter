@@ -102,11 +102,12 @@ fn index_html(raw: String, tag: &str) -> String {
     out.replace("__LSP_THEME__", &theme())
 }
 
-/// The licence, third-party notices and credits the About page shows: kept at
-/// the repository root (and the bundle's), not in web/, so there's one copy.
+/// The licence, copyright notices, third-party notices and credits the About
+/// page shows: kept at the repository root (and the bundle's), not in web/,
+/// so there's one copy.
 fn legal(path: &str) -> Option<Response> {
     let name = path.strip_prefix("/legal/")?;
-    let name = ["TERMS.md", "LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "CREDITS.md"].into_iter().find(|n| *n == name)?;
+    let name = ["TERMS.md", "LICENSE.txt", "NOTICE.txt", "THIRD-PARTY-NOTICES.txt", "CREDITS.md"].into_iter().find(|n| *n == name)?;
     let dir = if crate::bundle::active() { crate::bundle::dir() } else { paths::repo() };
     let Ok(bytes) = std::fs::read(dir.join(name)) else { return Some(StatusCode::NOT_FOUND.into_response()) };
     Some(([(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())

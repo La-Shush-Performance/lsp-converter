@@ -75,8 +75,9 @@ Copyright © 2026 La Shush Performance. Based on ACECM, copyright ©
 WhoaThatCombo and the ACECM contributors.
 
 It's free software under the GNU General Public License, version 3 or
-later ([LICENSE.txt](LICENSE.txt)). Third-party code and its licences are
-listed in [CREDITS.md](CREDITS.md).
+later ([LICENSE.txt](LICENSE.txt)); the copyright notices, ours and
+ACECM's, are in [NOTICE.txt](NOTICE.txt). Third-party code and its licences
+are listed in [CREDITS.md](CREDITS.md).
 
 The La Shush Performance name, the LSP badge, crest and monogram are La
 Shush Performance's trademarks, not covered by the GPL.

@@ -27,10 +27,10 @@ fn bundle() {
     walk(&web, &web, &mut files);
     println!("cargo:rerun-if-changed={}", web.display());
     // the licence the version resource points at ("LICENSE.txt in this
-    // application"), with the third-party notices and credits the About page
-    // shows (web.rs serves them as /legal/...), and the terms of use the
-    // first-start box asks to agree to
-    for name in ["TERMS.md", "LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "CREDITS.md"] {
+    // application"), with the copyright notices, third-party notices and
+    // credits the About page shows (web.rs serves them as /legal/...), and
+    // the terms of use the first-start box asks to agree to
+    for name in ["TERMS.md", "LICENSE.txt", "NOTICE.txt", "THIRD-PARTY-NOTICES.txt", "CREDITS.md"] {
         let p = repo.join(name);
         println!("cargo:rerun-if-changed={}", p.display());
         if p.is_file() {

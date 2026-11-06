@@ -28,6 +28,7 @@ Modified by La Shush Performance from ACECM commit `18b6d272bddb` (see `converte
 - 4 Nov 2026: the sidebar shows LA SHUSH PERFORMANCE under the logo, and the Drift page is called Drift Shed. "Remove from the game" works on all the ticked cars at once, and Delete takes a car out of the Converted list as well as out of the game.
 - 5 Nov 2026: terms of use (`TERMS.md`, bundled with the licence and shown on the About page). The first time the app opens it asks the user to agree, and asks again only when the terms change. Converted cars go straight into the game unless "Install in the game" is unticked. A car card shows "In game" only when the car is really in EVO's mods folder. Cars converted with ACECM or an older build show "Update available". A new option, "Raise a short steering lock", sets a minimum steering lock with a slider.
 - 6 Nov 2026: the About page and README say what La Shush Performance changed in the converter and carry the copyright line. The terms of use say plainly that they don't limit the GPL.
+- 6 Nov 2026: `LICENSE.txt` is the GPL's own text, unchanged, so tools that read licences (GitHub's among them) recognise it. The copyright notices that stood above it, ours and ACECM's word for word, are in `NOTICE.txt`, which the app bundles and its About page shows.
 
 ### The converter
 
@@ -43,4 +44,4 @@ Modified by La Shush Performance from ACECM commit `18b6d272bddb` (see `converte
 
 ## License and attribution
 
-ACECM's converter and desktop application are licensed under GPL-3.0-or-later, and so is LSP Converter. ACECM's licence files and notices are kept (`LICENSE.txt`, `CREDITS.md`, `converter/LICENSE`, `converter/CREDITS.md`). The GPL does not grant rights to redistribute game assets or third-party car mods.
+ACECM's converter and desktop application are licensed under GPL-3.0-or-later, and so is LSP Converter. ACECM's licence files and notices are kept (`LICENSE.txt`, `NOTICE.txt`, `CREDITS.md`, `converter/LICENSE`, `converter/CREDITS.md`). The GPL does not grant rights to redistribute game assets or third-party car mods.
