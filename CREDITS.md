@@ -1,7 +1,8 @@
 # Credits
 
 LSP Converter, by La Shush Performance, is a modified version of ACECM
-(Assetto Corsa EVO Content Manager) by the ACECM contributors. Both are free
+(Assetto Corsa EVO Content Manager) by WhoaThatCombo and the ACECM
+contributors. Both are free
 software under the GNU General Public License, version 3 or later
 (LICENSE.txt). Neither is affiliated with Kunos Simulazioni or 505 Games.
 Assetto Corsa and Assetto Corsa EVO are their trademarks. No game content is

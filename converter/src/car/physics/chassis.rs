@@ -207,8 +207,8 @@ pub fn brakes_steering(c: &mut Ctx) -> Result<()> {
             ac1_lock / ac1_ratio.abs(), profile::WHEEL_LOCK_P90, ac1_ratio.abs(), ratio.abs(), profile::WHEEL_LOCK_P75, lock / ratio.abs(), ac1_rod * ac1_ratio / ratio
         ));
     }
-    // the user's minimum lock (the Convert page's "Raise a short steering
-    // lock"): off unless asked for
+    // the user's minimum lock (the Convert page's "Minimum steering lock"):
+    // off unless asked for
     let (lock, ratio) = match c.min_lock.and_then(|m| min_lock(lock, ratio, m)) {
         Some((l, r)) => {
             c.note(format!(

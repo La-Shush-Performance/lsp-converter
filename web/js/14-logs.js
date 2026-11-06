@@ -8,7 +8,7 @@ async function logsPage() {
   const card = el('div', 'card');
   card.innerHTML = '<h2>Logs</h2>'
     + '<div class="tiny dim">Everything LSP Converter does, plus full tracebacks for '
-    + 'any error. Newest at the bottom.</div>';
+    + 'any error. Newest at the bottom. Found a bug? Tell us on ' + discordLinkHtml() + '; we may ask for this log.</div>';
   const row = el('div', 'row wrap');
   row.style.margin = '10px 0';
   const pick = el('select');

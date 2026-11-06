@@ -12,7 +12,9 @@ Runs on Windows 10/11 (Edge WebView2 is included with Windows 11).
 
 ## Using it
 
-1. Open **LSP Converter**.
+1. Unzip it anywhere and open **LSP Converter.exe**. There's no installer.
+   It isn't code-signed yet, so Windows may say it "protected your PC":
+   click **More info**, then **Run anyway**.
 2. **Convert** lists the cars in your AC install. Pick one, convert it, and
    the result is checked and installed into your EVO mods folder
    (`Saved Games\ACE\mods`), where the game finds it.
@@ -30,6 +32,12 @@ Its settings, logs and work files live in `%LOCALAPPDATA%\LSP Converter`.
 - Kunos's own AC cars: they belong to Kunos.
 - Tracks: putting a converted track in the game means changing the game's
   own `content.kspkg`, so LSP Converter sticks to cars.
+
+### Found a bug, or want a feature?
+
+Tell us on our Discord, https://discord.gg/zjq45ZCJCt, or email
+contact@lashushperformance.com, with the car and what happened.
+**Diagnostics → Logs** has the log we may ask for.
 
 ## Build from source
 

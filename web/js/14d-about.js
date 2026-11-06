@@ -88,8 +88,14 @@ async function aboutPage() {
   const contact = el('div', 'card');
   const mail = 'contact@lashushperformance.com';
   contact.innerHTML = '<h2>Contact</h2>'
-    + '<p>Found a bug, or want a feature? Email us, and tell us the car and what happened. '
+    + '<p>Found a bug, or want a feature? Tell us on our Discord or by email, with the car and what happened. '
     + 'The Diagnostics page has the log we\'ll need.</p>';
+  const disc = el('p', '', 'Our Discord: ');
+  disc.style.margin = '0 0 12px';
+  const dl = extLink(LSP_DISCORD);
+  dl.classList.add('mono');
+  disc.append(dl);
+  contact.append(disc);
   const crow = el('div', 'row wrap');
   crow.style.gap = '10px';
   const addr = extLink('mailto:' + mail);

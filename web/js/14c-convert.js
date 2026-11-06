@@ -199,8 +199,8 @@ async function convertPage() {
   opts.append(cbB);
   // a steering lock below the slider's degrees is raised to it (the
   // converter's --min-lock); off by default, cars only
-  const cbL = el('label', 'tiny', '<input type="checkbox"> Raise a short steering lock to at least ');
-  cbL.title = 'Off: the mod\'s own steering lock. On: a lock below this many degrees each way is raised to it, so the wheels turn further (never past a typical stock car\'s angle; past that the steering is made slower instead). Stock EVO cars run 217 to 630, most around 440.';
+  const cbL = el('label', 'tiny', '<input type="checkbox"> Minimum steering lock ');
+  cbL.title = 'Off: every car keeps its own steering lock. On: a car with less lock than this (degrees each way) gets this much, so it turns further; a car with more keeps its own. The front wheels never turn further than a typical stock car\'s. Stock EVO cars run 217° to 630°, most around 440°.';
   const lockIn = el('input');
   lockIn.type = 'range'; lockIn.min = '270'; lockIn.max = '540'; lockIn.step = '10'; lockIn.value = '360';
   lockIn.style.cssText = 'width:120px;vertical-align:middle';
@@ -890,7 +890,8 @@ async function convertPage() {
       fill.style.background = 'var(--red)';
       const why = lines.filter(l => l.startsWith('! ')).slice(-2).map(l => l.slice(2)).join(' ');
       pword.innerHTML = s.state === 'cancelled' ? 'Stopped.' : '<b style="color:var(--red)">That didn\'t work.</b> '
-        + esc(res.error || why || '') + ' <span class="tiny dim">Open Details for the full output.</span>';
+        + esc(res.error || why || '') + ' <span class="tiny dim">Open Details for the full output. '
+        + 'If it looks like a bug, tell us on ' + discordLinkHtml() + '.</span>';
       if (res.check) pcheck.append(cvCheckBox(res.check));
       ptime.textContent = '';
     }

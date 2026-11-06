@@ -167,6 +167,7 @@ code,kbd,.mono,.ver,.id{font-family:var(--mono);font-weight:600;font-variant-num
 .side-note{margin:0 20px 18px 22px;font:400 11px/1.55 var(--ui);color:var(--dim2)}
 .side-note a.ext{color:var(--dim);text-decoration-color:var(--steel)}
 .side-note a.ext:hover{color:var(--fg)}
+.side-note .sn-bug{display:block;margin-top:6px}
 #sections2::before{content:"More";display:block;padding:0 12px 8px;
   font:500 10px/1 var(--ui);text-transform:uppercase;letter-spacing:.32em;color:var(--dim2)}
 .side-stat{border-top:1px solid var(--steel);padding:14px 20px 16px}

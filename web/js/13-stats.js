@@ -2,7 +2,7 @@
    a build; don't edit by hand. Totals only. */
 const LSP_STATS_DATE = '6 November 2026';
 const LSP_STATS = [
-  ['124', 'hours put in, between the code and the laps'],
+  ['131', 'hours put in, between the code and the laps'],
   ['514', 'laps driven in testing, in EVO and AC1'],
   ['232', 'test sessions in EVO and AC1'],
   ['78', 'MoTeC telemetry logs studied'],
@@ -11,5 +11,5 @@ const LSP_STATS = [
   ['72', 'stock EVO cars measured to set the handling rules'],
   ['65', 'stock EVO engines measured for sound'],
   ['170', 'automatic tests'],
-  ['183', 'changes since the original converter'],
+  ['190', 'changes since the original converter'],
 ];

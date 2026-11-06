@@ -272,6 +272,10 @@ function bindDropAnywhere() {
    the app's own window, or nowhere. Every https / mailto link on any page
    goes to this PC's browser or mail app instead (/api/open, procs.rs). */
 const LSP_SITE = 'https://lashushperformance.com';
+// the community: where bugs and requests go (the email is for everything else)
+const LSP_DISCORD = 'https://discord.gg/zjq45ZCJCt';
+// "our Discord" as a link, for a sentence built as HTML
+const discordLinkHtml = (text = 'our Discord') => '<a class="ext" href="' + LSP_DISCORD + '" title="' + LSP_DISCORD + '">' + esc(text) + '</a>';
 async function openLink(url) {
   const j = await api('open', { url });
   if (j && j.ok) return;
@@ -325,7 +329,8 @@ document.addEventListener('auxclick', _linkClick);
 /* ---- the sidebar's gap, between Convert and More ---------------------------
    Empty on purpose, but for two quiet things: what the converter is doing
    (only while a car converts, or until you've seen how it went), and at the
-   bottom a note that this is an early version, with our address. */
+   bottom a note that this is an early version, with our address, and our
+   Discord for bugs. */
 const _sjSeen = (() => { try { return sessionStorage.getItem('lsp.sidejob.seen') || ''; } catch (e) { return ''; } })();
 let _sjLast = null, _sjSeenKey = _sjSeen, _sjTimer = 0;
 const _sjNames = {};
@@ -434,6 +439,7 @@ async function paintSideNote() {
   // the address may break after the @, never mid-word
   a.innerHTML = 'contact@<wbr>lashushperformance.com';
   note.append(' ', a);
+  note.append(el('span', 'sn-bug', 'Found a bug? Tell us on ' + discordLinkHtml('Discord') + '.'));
   fill.append(note);
 }
 paintSideNote();
