@@ -574,13 +574,21 @@ pub struct Tex<'a> {
 }
 
 pub fn h64(b: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    // sampled FNV over at most 1 MB + length: fast and enough to tell images apart
-    let step = (b.len() / (1 << 20)).max(1);
-    for c in b.iter().step_by(step) {
-        h = (h ^ *c as u64).wrapping_mul(0x100000001b3);
+    // every byte, 8 at a time. A sample (every 16th byte of a 16 MB file)
+    // read only byte 0 of each DXT5 block, the alpha endpoint: nforce_e30's
+    // RedBull and OnlyFans body.dds (4096 DXT5, alpha 0 throughout) hashed
+    // the same, and RedBull drew OnlyFans' livery. This is the texture and
+    // skin de-dupe key, so it must see the whole file.
+    let mut h: u64 = 0xcbf29ce484222325 ^ (b.len() as u64).wrapping_mul(0x9e3779b97f4a7c15);
+    let mut it = b.chunks_exact(8);
+    for c in &mut it {
+        let w = u64::from_le_bytes(c.try_into().unwrap());
+        h = (h ^ w).wrapping_mul(0x9e3779b97f4a7c15).rotate_left(29);
     }
-    h ^ (b.len() as u64).wrapping_mul(0x9e3779b97f4a7c15)
+    for &c in it.remainder() {
+        h = (h ^ c as u64).wrapping_mul(0x100000001b3);
+    }
+    h ^ (h >> 31)
 }
 
 pub fn slug(s: &str) -> String {

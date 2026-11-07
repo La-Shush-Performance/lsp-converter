@@ -497,7 +497,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
     notes.extend(functions(&mut files, &id, &stem, &car, &k, &frame, &insts, &plan, &written.sections, &anim, &lamp_plan, &led_plan, &disp_plan)?);
     notes.extend(animparts::write(&mut files, &id, &anim)?);
     let secs: Vec<skins::Section> = written.sections.iter().map(|(n, kind, m, int, p)| skins::Section { name: n, kind: *kind, material: *m, interior: *int, path: p }).collect();
-    let sk = skins::write(&mut files, &ident, &car, &k, &secs, &mut tex, &templates, paint_tmpl)?;
+    let sk = skins::write(&mut files, &ident, &car, &k, &secs, &wheels.rim_mats, &mut tex, &templates, paint_tmpl)?;
     notes.extend(sk.notes);
     notes.extend(identity::apply(&mut files, &ident, &car)?);
     let phys = physics::write(&mut files, &id, &stem, &car, &frame, o.content.as_deref(), o.profile, o.keep_brakes, o.min_lock)?;

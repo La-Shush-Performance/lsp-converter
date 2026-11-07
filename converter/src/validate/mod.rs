@@ -522,6 +522,7 @@ pub fn car(kspkg: &Path, game: &Game) -> Result<Report> {
     check_refs(&files, &format!("content\\cars\\{id}\\").to_lowercase(), game, &mut r);
     check_audio(&files, &id, &mut r);
     check_brand(&files, &id, game, &mut r);
+    check_rim_designs(&files, &mut r);
     // batch names / shaders the car renderer looks up (validate::batches)
     {
         let low: std::collections::HashMap<String, &Vec<u8>> = files.iter().map(|(k, v)| (k.to_lowercase(), v)).collect();
@@ -575,6 +576,34 @@ pub fn car(kspkg: &Path, game: &Game) -> Result<Report> {
         }
     }
     Ok(r)
+}
+
+/// Every rim design a visual preset (f6) or final state (f20.f2) names must
+/// be listed in a rimmesh (f10) of the car: the game looks it up there, and
+/// a missing one stops it at startup (protobuf map CHECK "key not found").
+fn check_rim_designs(files: &BTreeMap<String, Vec<u8>>, r: &mut Report) {
+    let mut listed = std::collections::HashSet::new();
+    for (p, b) in files.iter().filter(|(p, _)| p.to_lowercase().ends_with(".rimmesh")) {
+        match Msg::parse(b) {
+            Ok(m) => listed.extend(m.all(10).filter_map(|v| match v { crate::io::pb::Val::Bytes(b) => Some(String::from_utf8_lossy(b).to_lowercase()), _ => None })),
+            Err(_) => r.err(format!("rims: {p} does not parse")),
+        }
+    }
+    let mut used: Vec<(String, String)> = Vec::new();
+    for (p, b) in files {
+        let pl = p.to_lowercase();
+        let Ok(m) = Msg::parse(b) else { continue };
+        if pl.ends_with(".visualcarpreset") {
+            used.extend(m.str(6).map(|d| (p.clone(), d)));
+        } else if pl.ends_with(".carfinalstate") {
+            used.extend(m.sub(20).and_then(|s| s.str(2)).map(|d| (p.clone(), d)));
+        }
+    }
+    for (p, d) in used {
+        if !d.is_empty() && !listed.contains(&d.to_lowercase()) {
+            r.err(format!("rims: {p} uses {d}, which no rimmesh lists (the game stops at startup)"));
+        }
+    }
 }
 
 /// The car's brand (car::brand): the `.moddedcarcontent` brand string is a

@@ -43,6 +43,10 @@ pub struct Wheels {
     pub measured_radius: BTreeMap<String, f64>,
     /// written tyre radius per axle (front, rear)
     pub tyre_radius: [f64; 2],
+    /// every rim material written (path, kn5 material, slot), built under
+    /// the default skin: the liveries give a skin its own when its rim
+    /// textures differ (`skins::write`)
+    pub rim_mats: Vec<(String, usize, materials::RimSlot)>,
 }
 
 /// One corner's rim or blur geometry in the wheel frame, by kn5 material;
@@ -427,7 +431,7 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], p
     let paths: BTreeMap<&str, (String, String)> = CORNERS.iter().map(|c| (*c, fallback(c, &rim_paths))).collect();
     if paths.values().all(|p| p.0.is_empty()) {
         notes.push("wheels: no rim geometry under WHEEL_xx - the donor rims stay".into());
-        return Ok(Wheels { notes, measured_radius: BTreeMap::new(), tyre_radius: [f.tyres[0].radius, f.tyres[1].radius] });
+        return Ok(Wheels { notes, measured_radius: BTreeMap::new(), tyre_radius: [f.tyres[0].radius, f.tyres[1].radius], rim_mats: Vec::new() });
     }
     // tyres
     let mut measured = BTreeMap::new();
@@ -572,7 +576,8 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], p
     }
     notes.push(format!("wheels: tyres {}/{}R{} front, {}/{}R{} rear; rims {} meshes", sizes[0].0, sizes[0].1, sizes[0].2, sizes[1].0, sizes[1].1, sizes[1].2,
         rim_paths.values().map(|p| (!p.0.is_empty()) as usize + (!p.1.is_empty()) as usize).sum::<usize>()));
-    Ok(Wheels { notes, measured_radius: measured, tyre_radius: [f.tyres[0].radius, f.tyres[1].radius] })
+    let rim_mats = mats.into_iter().map(|((mi, slot), p)| (p, mi, slot)).collect();
+    Ok(Wheels { notes, measured_radius: measured, tyre_radius: [f.tyres[0].radius, f.tyres[1].radius], rim_mats })
 }
 
 /// The radius of a written tyre mesh (LOD0, wheel frame): max over vertices.

@@ -89,6 +89,38 @@ fn signature(m: &crate::ac1::kn5::Material, skin: &Skin, tex: &Tex, cache: &mut 
     }).collect()
 }
 
+/// Replace every string field equal (ignoring case) to a `map` key with its
+/// value, in nested messages too. A bytes field that is not a key is tried
+/// as a message and re-written only when something inside it changed.
+fn swap_paths(m: &mut Msg, map: &[(String, String)]) -> bool {
+    let mut changed = false;
+    for f in m.fields.iter_mut() {
+        match &mut f.val {
+            Val::Msg(sub) => changed |= swap_paths(sub, map),
+            Val::Bytes(b) => {
+                if let Some((_, to)) = std::str::from_utf8(b).ok().and_then(|s| map.iter().find(|(k, _)| k.eq_ignore_ascii_case(s))) {
+                    *b = to.as_bytes().to_vec();
+                    changed = true;
+                } else if let Ok(mut sub) = Msg::parse(b) {
+                    if swap_paths(&mut sub, map) {
+                        *b = sub.encode();
+                        changed = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
+/// Insert a field after the last field `num` (or at the end), keeping the
+/// donor's field order.
+fn insert_after_last(m: &mut Msg, num: u32, val: Val) {
+    let at = m.fields.iter().rposition(|f| f.num == num).map(|p| p + 1).unwrap_or(m.fields.len());
+    m.fields.insert(at, crate::io::pb::Field { num, val });
+}
+
 /// `img` scaled to fit a `size` square, centred on transparent.
 fn letterbox(img: &crate::io::texture::Image, size: u32) -> crate::io::texture::Image {
     let s = size as f32 / img.w.max(img.h) as f32;
@@ -196,7 +228,7 @@ pub struct Out {
 /// `paint_tmpl`: the donor's layered paint material (before the body stage
 /// replaced it).
 #[allow(clippy::too_many_arguments)]
-pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: &[Section], tex: &mut Tex, t: &Templates, paint_tmpl: Option<Msg>) -> Result<Out> {
+pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: &[Section], rim_mats: &[(String, usize, materials::RimSlot)], tex: &mut Tex, t: &Templates, paint_tmpl: Option<Msg>) -> Result<Out> {
     let base = ident.base();
     let (id, stem) = (ident.id.as_str(), ident.stem.as_str());
     let mut notes = Vec::new();
@@ -226,6 +258,10 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
     let mut colours: Vec<String> = Vec::new();
     let n_liv = skins.len().max(1);
     let mut sig_cache = std::collections::HashMap::new();
+    // (livery number, old path -> new path) for liveries with their own rims
+    let mut own_rims: Vec<(usize, Vec<(String, String)>)> = Vec::new();
+    // (rim texture signature, map) per distinct rim set
+    let mut rim_sets: Vec<(Vec<Vec<u64>>, Vec<(String, String)>)> = Vec::new();
     for li in 0..n_liv {
         let i = li + 1;
         let skin = skins.get(li);
@@ -251,6 +287,35 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
             let p = format!("{base}\\skins\\{}\\{}.material", materials::slug(&sk.folder), s.name);
             files.put(&p, mm.encode());
             slots.push((s.name.to_string(), p, s.kind == Kind::Paint));
+        }
+        // the livery's own rims: AC1 resolves rim textures per skin like any
+        // other, but EVO's rims come from one rim design built under the
+        // first skin. nforce_e30's Black skin ships a black
+        // metal_detail_rim.dds; RedBull has none and shows the kn5's light
+        // grey in AC1, but drew Black's black rims. A skin whose rim
+        // textures differ gets its rim materials and a rim design of its own
+        // (stock cars also point visual presets at different rim designs).
+        if let (Some(sk), Some(d)) = (skin, default) {
+            let sig = |s: &Skin, tex: &Tex, c: &mut std::collections::HashMap<String, u64>| -> Vec<Vec<u64>> { rim_mats.iter().map(|(_, mi, _)| signature(&k.materials[*mi], s, tex, c)).collect() };
+            let own = if li > 0 { sig(sk, tex, &mut sig_cache) } else { Vec::new() };
+            // liveries with the same rim textures share one set
+            if li > 0 && own != sig(d, tex, &mut sig_cache) {
+                if let Some((_, map)) = rim_sets.iter().find(|(s, _)| *s == own) {
+                    own_rims.push((i, map.clone()));
+                } else {
+                    let mut map = Vec::new();
+                    for (p, mi, slot) in rim_mats {
+                        let mm = materials::build_rim(files, tex, t, &k.materials[*mi], Some((sk.folder.as_str(), sk.dir.clone())), *slot);
+                        let file = p.rsplit('\\').next().unwrap_or(p);
+                        let np = format!("{base}\\skins\\{}\\{file}", materials::slug(&sk.folder));
+                        files.put(&np, mm.encode());
+                        map.push((p.clone(), np));
+                    }
+                    map.push((rimdesign.clone(), format!("{base}\\skins\\rimdesign_{stem}_{i}.design")));
+                    rim_sets.push((own, map.clone()));
+                    own_rims.push((i, map));
+                }
+            }
         }
         // paint first: the visual preset's first state carries the colour
         slots.sort_by_key(|x| !x.2);
@@ -449,6 +514,77 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
             }
         }
         files.put(&key, d.encode());
+        // liveries with their own rims: the cleaned design with their
+        // materials, named by their visual preset and final state
+        for (i, map) in &own_rims {
+            let mut nd = d.clone();
+            swap_paths(&mut nd, map);
+            // rim batches the donor's design has no slot for get one, or
+            // the mesh's own (first-skin) material stays: nforce_e30's
+            // spokes are EXT_RIM_DECAL, and the Huracan STO donor names only
+            // EXT_RIM and the two blur batches. Extra materials of a batch
+            // (EXT_RIM_2..) stay with the mesh: a slot is a whole batch.
+            let extra: Vec<(String, String)> = map.iter().filter_map(|(old, new)| {
+                let b = old.rsplit('\\').next()?.strip_suffix(".material")?;
+                let numbered = b.rsplit('_').next().is_some_and(|x| x.chars().all(|c| c.is_ascii_digit()));
+                (b.starts_with("EXT_RIM") && !numbered && !nd.subs(3).iter().any(|s| s.str(1).as_deref() == Some(b))).then(|| (b.to_string(), new.clone()))
+            }).collect();
+            let rim_desc = |b: &str| b.strip_prefix("EXT_").unwrap_or(b).replace('_', " ");
+            if let Some(tmpl) = nd.subs(3).into_iter().find(|s| s.str(1).as_deref() == Some("EXT_RIM")) {
+                for (b, mat) in &extra {
+                    let mut s = tmpl.clone();
+                    s.set_str(1, b);
+                    s.set_str(2, &rim_desc(b));
+                    s.set_str(3, mat);
+                    insert_after_last(&mut nd, 3, Val::Msg(s));
+                }
+            }
+            if let Some((_, np)) = map.last() {
+                files.put(np, nd.encode());
+            }
+            let visual = format!("{base}\\presets\\preset_{stem}_visual_{i}.visualcarpreset");
+            let fs = format!("{base}\\presets\\{id}_preset_{stem}_mech_1_preset_{stem}_visual_{i}.carfinalstate");
+            for p in [visual, fs] {
+                if let Some(key) = files.find_ci(&p) {
+                    let mut m = Msg::parse(files.get(&key).unwrap())?;
+                    swap_paths(&mut m, map);
+                    // the final state's rim states: one per added slot
+                    if p.ends_with(".carfinalstate") && !extra.is_empty() {
+                        if let Some(ri) = m.idx(20).first().copied() {
+                            let rims = m.open(ri)?;
+                            if let Some(tmpl) = rims.subs(3).into_iter().find(|s| s.str(1).as_deref() == Some("RIM")) {
+                                for (b, mat) in &extra {
+                                    let mut e = tmpl.clone();
+                                    e.set_str(1, &rim_desc(b));
+                                    e.msg_mut(2)?.set_str(1, mat);
+                                    insert_after_last(rims, 3, Val::Msg(e));
+                                }
+                            }
+                        }
+                    }
+                    files.put(&key, m.encode());
+                }
+            }
+        }
+        // every rim design must be listed in the rimmeshes (f10, as the
+        // A110 S lists _dual and _solid): the game looks designs up there,
+        // and one it can't find stops it at startup (protobuf map CHECK
+        // "key not found: ...rimdesign_lsptest_e30_3.design")
+        let mut designs: Vec<&String> = own_rims.iter().filter_map(|(_, m)| m.last().map(|x| &x.1)).collect();
+        designs.sort();
+        designs.dedup();
+        for rm in files.under(&format!("{base}\\skins")).into_iter().filter(|p| p.to_lowercase().ends_with(".rimmesh")) {
+            let mut m = Msg::parse(files.get(&rm).unwrap())?;
+            for dp in &designs {
+                if !m.all(10).any(|v| matches!(v, Val::Bytes(b) if b.eq_ignore_ascii_case(dp.as_bytes()))) {
+                    insert_after_last(&mut m, 10, Val::Bytes(dp.as_bytes().to_vec()));
+                }
+            }
+            files.put(&rm, m.encode());
+        }
+        if !own_rims.is_empty() {
+            notes.push(format!("skins: {} livery(ies) with rims of their own in {} rim set(s) (their rim textures differ from the first skin's)", own_rims.len(), rim_sets.len()));
+        }
     }
     for p in files.under(&format!("{base}\\presets")) {
         if !p.to_lowercase().ends_with(".carfinalstate") {
