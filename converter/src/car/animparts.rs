@@ -169,7 +169,10 @@ fn int_name(base: &str) -> String {
 }
 
 fn seg_prefix(path: &str, prefix: &str) -> bool {
-    path.len() >= prefix.len() && path[..prefix.len()].eq_ignore_ascii_case(prefix) && (path.len() == prefix.len() || path.as_bytes()[prefix.len()] == b'/')
+    // compare bytes: a node name can hold non-ASCII (e.g. U+FFEF), and slicing
+    // the str at prefix.len() can land inside a character
+    let (p, q) = (path.as_bytes(), prefix.as_bytes());
+    p.len() >= q.len() && p[..q.len()].eq_ignore_ascii_case(q) && (p.len() == q.len() || p[q.len()] == b'/')
 }
 
 impl Plan {
@@ -648,4 +651,16 @@ pub fn write(files: &mut Files, id: &str, p: &Plan) -> Result<Vec<String>> {
     }
     files.put(&ap, actor.encode());
     Ok(notes)
+}
+
+#[cfg(test)]
+mod seg_prefix_tests {
+    use super::seg_prefix;
+    #[test]
+    fn non_ascii_names_do_not_panic() {
+        // a node name with U+FFEF straddling the prefix length (friend's crash)
+        assert!(!seg_prefix("ROOT/0123456789a\u{ffef}x", "ROOT/0123456789ab"));
+        assert!(seg_prefix("Root/Wheel/\u{ffef}", "ROOT/WHEEL"));
+        assert!(!seg_prefix("ROOT/WHEELS", "ROOT/WHEEL"));
+    }
 }
