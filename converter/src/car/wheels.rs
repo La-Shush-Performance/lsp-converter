@@ -76,6 +76,35 @@ fn corner_geo(insts: &[Inst], parts: &[usize], f: &Frame, c: &str, kind: Kind, k
     by
 }
 
+/// Each wheel centre moved along its axle to the middle of its AC1 tyre's
+/// tread, before the body and wheel stages: the HUB_xx bone (and the DISC /
+/// SUSP bones under it) and EVO's one symmetric tyre then sit where AC1's
+/// tyre is, and everything at that corner keeps AC1's layout around it.
+/// The Old Man's WHEEL_xx nodes sit about 80 mm inboard of its tyres (at
+/// the hub face; suspensions.ini's track agrees with the tyres). Moving only
+/// the rims to centre the tyre put the five-spoke face 82 mm in, behind the
+/// brake disc and caliper, which stayed on the HUB bone at AC1's place.
+/// A corner without its own tyre takes its axle partner's offset, mirrored;
+/// under 5 mm is measuring noise. Returns the note.
+pub fn centre_on_tyres(f: &mut Frame, insts: &[Inst], k: &Kn5, h: &materials::Hints) -> Option<String> {
+    let parts: Vec<usize> = insts.iter().enumerate().filter(|(_, i)| i.under == geometry::Under::Wheel).map(|(n, _)| n).collect();
+    let own: BTreeMap<&str, Option<f64>> = CORNERS.iter().map(|c| (*c, tread_mid(&tyre_points(insts, &parts, f, c, k, h)))).collect();
+    let partner = |c: &str| match c { "LF" => "RF", "RF" => "LF", "LR" => "RR", _ => "LR" };
+    let mut moved = Vec::new();
+    for c in CORNERS {
+        let Some(mid) = own[c].or(own[partner(c)].map(|m| -m)).filter(|m| m.abs() >= 0.005) else { continue };
+        // the wheel frame's axle (x) in car space
+        let axle = frame::inv(&f.wheel_unrotate(c)).map(|r| frame::xdir(&r, [1.0, 0.0, 0.0])).unwrap_or([1.0, 0.0, 0.0]);
+        if let Some(p) = f.wheel_centres.get_mut(c) {
+            for a in 0..3 {
+                p[a] += axle[a] * mid;
+            }
+            moved.push(format!("{c} {:+.0} mm", mid * 1000.0));
+        }
+    }
+    (!moved.is_empty()).then(|| format!("wheels: the AC1 tyres sit off the wheel nodes ({}): each wheel centre (hub, disc and suspension bones, EVO's tyre) moved to its tyre", moved.join(", ")))
+}
+
 /// (axial |x|, radius) of every vertex of a corner's tyre, in the wheel frame.
 fn tyre_points(insts: &[Inst], parts: &[usize], f: &Frame, c: &str, k: &Kn5, h: &materials::Hints) -> Vec<(f64, f64)> {
     let geos = corner_geo(insts, parts, f, c, Kind::Tyre, k, h, 0.0);

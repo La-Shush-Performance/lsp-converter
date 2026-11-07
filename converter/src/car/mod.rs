@@ -418,11 +418,13 @@ pub fn convert(o: &Opts) -> Result<Report> {
             notes.push(format!("materials: carbon from the CSP config: {}", carbon.join(", ")));
         }
     }
-    let frame = frame::Frame::build(&car, &k);
+    let mut frame = frame::Frame::build(&car, &k);
     notes.extend(frame.notes.iter().cloned());
     let insts = geometry::flatten(&k, &mut notes);
     let mut hints = materials::Hints::from_data(car.ini("lights.ini"), car.ini("mirrors.ini"), skin_textures(&car));
     hints.paint = materials::paint_fallback(&k.materials, &hints);
+    // each wheel centred on its AC1 tyre (before anything places parts at it)
+    notes.extend(wheels::centre_on_tyres(&mut frame, &insts, &k, &hints));
     // meshes AC1 never draws (wholly transparent cut-outs) stay out
     {
         let skin_dirs: Vec<std::path::PathBuf> = car.skins.iter().map(|s| car.skin_dir(s)).collect();

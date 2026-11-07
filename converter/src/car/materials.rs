@@ -475,11 +475,17 @@ pub fn pbr(m: &Material, kind: Kind) -> Pbr {
     let metal = metalness(m);
     let mut rough = roughness(exp, spec).clamp(lo, hi);
     let dim = tint;
-    if let Some(cap) = reflective_metal(m, metal).filter(|_| kind == Kind::Generic) {
+    if let Some(cap) = reflective_metal(m, metal).filter(|_| shines(kind)) {
         rough = rough.min(cap);
         tint = 1.0;
     }
     Pbr { rough, metal, tint, dim }
+}
+
+/// The kinds `reflective_metal` applies to: general parts and rims (paint,
+/// glass, lamps, discs and the rest keep their own rules).
+pub fn shines(kind: Kind) -> bool {
+    matches!(kind, Kind::Generic | Kind::Rim | Kind::RimBlur)
 }
 
 /// Stock chrome's roughness: EXT_MECH_CHROME over the stock cars, its paint
@@ -504,6 +510,9 @@ const METAL_ROUGH_MAX: f32 = 0.45;
 /// (`Tex::metal_bake`): the same ext_chrome is the Old Man's side panels too,
 /// which a whole-material mirror turned to chrome. The roughness cap, or None
 /// for anything else.
+/// Rims too: the Old Man's five-spoke rims are the same ext_chrome, and as
+/// Kind::Rim they skipped this and came out the dull dark metal described
+/// above, where AC1 shows them chrome (`shines`).
 pub fn reflective_metal(m: &Material, metal: f32) -> Option<f32> {
     if metal < 0.5 {
         return None;
@@ -1493,7 +1502,7 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
     // EXT_CARBON carries FLAT_NM.dds there: a normal map, lilac as colour)
     let unlit = prop(m, "ksDiffuse").unwrap_or(0.4) + prop(m, "ksAmbient").unwrap_or(0.3) < 0.01;
     // a reflective metal with a maps texture goes texel by texel (`reflective_metal`)
-    let texel_cap = if inp.kind == Kind::Generic && !multimap && m.texture("txMaps").is_some() { reflective_metal(m, p.metal) } else { None };
+    let texel_cap = if shines(inp.kind) && !multimap && m.texture("txMaps").is_some() { reflective_metal(m, p.metal) } else { None };
     let mut metal_maps: Option<(String, String)> = None;
     let img = tex.image(diffuse, skin.map(|x| x.1)).map(|x| x.0);
     // a near-black texture with nothing drawn in it falls back to a flat
@@ -1647,7 +1656,7 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
         let qs = (spec / 0.05).round() * 0.05;
         let role = Role::Rough((qe * 1000.0) as u32, (qs * 1000.0) as u32);
         // a reflective metal: not the highlight's map (its own, below, or the scalar)
-        let shiny_metal = inp.kind == Kind::Generic && reflective_metal(m, p.metal).is_some();
+        let shiny_metal = shines(inp.kind) && reflective_metal(m, p.metal).is_some();
         if inp.kind != Kind::RimBlur && inp.kind != Kind::Paint && !shiny_metal {
             if let Some(rp) = tex.get(files, maps, role, skin) {
                 set_slot(&mut s, "Base_RoughnessMap", &rp);
