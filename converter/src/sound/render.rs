@@ -166,6 +166,28 @@ pub fn bands(game: &Path, banks: &[&[u8]], shots: &[Shot], tmp: &Path, n: usize)
     Ok(out)
 }
 
+/// ITU-R BS.1770 K-weighting at 48 kHz (the standard's own coefficients): the head's high-shelf
+/// (+4 dB above about 1.5 kHz) then the RLB high-pass (about 38 Hz), per channel of interleaved
+/// samples. Loudness as heard rather than signal power: deep bass counts for less.
+/// `ACECONV_LEVEL_WEIGHT=k` (measurement runs) applies it before the RMS.
+pub fn k_weight(x: &[f64], ch: usize) -> Vec<f64> {
+    const S: ([f64; 3], [f64; 2]) = ([1.535_124_859_586_97, -2.691_696_189_406_38, 1.198_392_810_852_85], [-1.690_659_293_182_41, 0.732_480_774_215_85]);
+    const H: ([f64; 3], [f64; 2]) = ([1.0, -2.0, 1.0], [-1.990_047_454_833_98, 0.990_072_250_366_21]);
+    let mut out = x.to_vec();
+    for (b, a) in [S, H] {
+        for c in 0..ch {
+            let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+            for i in (c..out.len()).step_by(ch) {
+                let x0 = out[i];
+                let y0 = b[0] * x0 + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
+                (x2, x1, y2, y1) = (x1, x0, y1, y0);
+                out[i] = y0;
+            }
+        }
+    }
+    out
+}
+
 /// RMS in dBFS of a 16-bit / float WAV, skipping `skip` frames, over `n` equal stretches.
 fn wav_rms(p: &Path, skip: usize, stretches: usize) -> Result<Vec<f32>> {
     let parts = stretches.max(1);
@@ -191,6 +213,7 @@ fn wav_rms(p: &Path, skip: usize, stretches: usize) -> Result<Vec<f32>> {
             } else {
                 bail!("WAV format {fmt}/{bits} bits");
             };
+            let x = if std::env::var("ACECONV_LEVEL_WEIGHT").as_deref() == Ok("k") { k_weight(&x, ch.max(1)) } else { x };
             // stretches of whole frames
             let frames = x.len() / ch.max(1);
             return Ok((0..parts).map(|k| {
@@ -202,4 +225,22 @@ fn wav_rms(p: &Path, skip: usize, stretches: usize) -> Result<Vec<f32>> {
         i += 8 + n + (n & 1);
     }
     bail!("{}: no data chunk", p.display())
+}
+
+#[cfg(test)]
+mod k_weight_tests {
+    #[test]
+    fn k_weight_shape() {
+        // a sine's level through the filter, dB re its plain RMS
+        let gain = |f: f64| {
+            let x: Vec<f64> = (0..48000).map(|i| (2.0 * std::f64::consts::PI * f * i as f64 / 48000.0).sin()).collect();
+            let y = super::k_weight(&x, 1);
+            let p = |v: &[f64]| v[24000..].iter().map(|s| s * s).sum::<f64>();
+            10.0 * (p(&y) / p(&x)).log10()
+        };
+        // BS.1770: about 0 dB at 1 kHz, +4 dB in the treble, bass cut below about 60 Hz
+        assert!(gain(1000.0).abs() < 1.0, "{}", gain(1000.0));
+        assert!((gain(8000.0) - 4.0).abs() < 0.6, "{}", gain(8000.0));
+        assert!(gain(30.0) < -2.0, "{}", gain(30.0));
+    }
 }
