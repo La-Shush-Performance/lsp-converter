@@ -122,6 +122,23 @@ fn csp_lut(v: &str, dir: &Path) -> Option<Vec<(f32, f32)>> {
     (pts.len() >= 2).then_some(pts)
 }
 
+/// How far past the limiter a CSP-transformed bank's never-reached positions go at the least:
+/// clear of the rpm overshoot when the engine bounces on the limiter.
+const PAST_LIMITER: f32 = 1000.0;
+
+/// Where a bank value `v` above the CSP table's top `smax` goes on the physics rpm: the bank's
+/// range above the table (`smax`..`pmax`) laid in order onto a band ending at the game's rpm
+/// top `gtop`, 1:1 when it fits, squeezed when it does not, and starting no lower than
+/// `reach` + `PAST_LIMITER` (`reach`: the highest rpm the engine gets to). An engine whose
+/// limiter is that close to `gtop` gets the band above `gtop`, 1:1.
+fn unreached_band(smax: f32, pmax: f32, reach: f32, gtop: f32) -> impl Fn(f32) -> f32 {
+    let span = (pmax - smax).max(1.0);
+    let floor = reach + PAST_LIMITER;
+    let lo = floor.max(gtop - span);
+    let k = if gtop > lo { (gtop - lo) / span } else { 1.0 };
+    move |v: f32| lo + (v.min(pmax) - smax).max(0.0) * k
+}
+
 /// The inverse of a CSP rpm transform: the physics rpm at which the bank sees `s`. `None` when
 /// the table never reaches `s` (CSP never plays the bank there). Below the table's first point
 /// the first slope carries on.
@@ -198,7 +215,17 @@ fn warp_code(code: &[u8], rpm: &BTreeSet<Guid>, f: &dyn Fn(f32) -> f32) -> Vec<u
 /// on the segment its root sits on, and layers placed above anything CSP ever lets the bank see
 /// are left out. The La Shush Momentum Ice: physics 8798 rpm -> bank 6900, its engine layers
 /// end at 7000 and its next layers start at 10000+, so the game went silent from 7000 rpm up.
-fn csp_rpm_transform(src: &mut Source, car_dir: &Path) -> Vec<String> {
+///
+/// Past the table's end CSP holds the bank at the last value (AC lookup tables clamp), up to
+/// the limiter and through any over-rev. Anything placed above that value goes to the top of
+/// the game's rpm range (`gtop`, 25000), in order, never below the limiter + `PAST_LIMITER`
+/// (`unreached_band`): no engine gets there, and a curve running from the table's end up to it
+/// stays all but flat, as CSP's hold does. Placed just past the table's last physics rpm it was
+/// in reach: nforce_e30's table ends at 8550 -> 11000 with the limiter at 9000, and its main
+/// layers fade out at bank 11100..11200 (into limiter layers CSP never lets it reach). That fade
+/// landed at 8650..8750, so the sound cut out short of the limiter and flickered while bouncing
+/// on it.
+fn csp_rpm_transform(src: &mut Source, car_dir: &Path, limiter: Option<f32>, gtop: f32) -> Vec<String> {
     let mut notes = Vec::new();
     let Some((path, secs)) = crate::car::fx::csp_config_at(car_dir, &car_dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()) else {
         return notes;
@@ -230,10 +257,12 @@ fn csp_rpm_transform(src: &mut Source, car_dir: &Path) -> Vec<String> {
             Ok(s) => s,
             Err(_) => continue,
         };
-        // past the table's end the bank is never driven: anything there is placed past the top
+        // past the table's end the bank is never driven: anything there goes to the top of the
+        // game's rpm range, above the highest rpm the engine reaches
         let pmax = rpm.iter().filter_map(|g| a.bank.params.get(g)).map(|p| p.max).fold(0.0f32, f32::max);
         let top = w.inv(w.smax).unwrap_or(0.0);
-        let f = |v: f32| w.inv(v).unwrap_or_else(|| (top + (v - w.smax)).max(top));
+        let band = unreached_band(w.smax, pmax, top.max(limiter.unwrap_or(0.0)), gtop);
+        let f = |v: f32| w.inv(v).unwrap_or_else(|| band(v));
         // layers CSP never lets the bank reach
         let mut gone = 0;
         for i in &s.top {
@@ -822,8 +851,10 @@ pub fn level_shots<'a>(ext: &'a str, int: &'a str, lim: f32) -> Vec<super::rende
 /// rebuild at the target level.
 pub fn build(car_dir: &Path, o: &Opts) -> Result<Built> {
     let mut src_bank = open_source(car_dir)?;
-    let csp_notes = csp_rpm_transform(&mut src_bank, car_dir);
     let gm = game(&o.content)?;
+    // the top of the game's rpm parameter (25000)
+    let gtop = gm.by_name.get("rpms").and_then(|g| gm.params.params.get(g)).map(|d| if d.p.flags & 8 != 0 { d.p.max + 1.0 } else { d.p.max }).unwrap_or(25000.0);
+    let csp_notes = csp_rpm_transform(&mut src_bank, car_dir, o.limiter, gtop);
     let q = match o.vorbis {
         Some(q) => q,
         None => (src_bank.ac1.codec == super::fsb5::MODE_VORBIS).then_some(0.8),
@@ -1489,6 +1520,27 @@ mod tests {
         // a table that is the identity, or that falls back, is left alone
         assert!(RpmWarp::new(vec![(0.0, 0.0), (9000.0, 9000.0)]).is_none());
         assert!(RpmWarp::new(vec![(0.0, 0.0), (5000.0, 6000.0), (9000.0, 5000.0)]).is_none());
+    }
+
+    #[test]
+    fn csp_never_reached_goes_to_the_top_of_the_game_range() {
+        // nforce_e30: table top bank 11000 at physics 8550, bank rpm to 13000, limiter 9000:
+        // its fade at bank 11100..11200 goes to 23100..23200, 1:1, ending at the game's 25000
+        let f = unreached_band(11000.0, 13000.0, 9000.0, 25000.0);
+        assert!((f(11100.0) - 23100.0).abs() < 0.01 && (f(11200.0) - 23200.0).abs() < 0.01);
+        assert!((f(13000.0) - 25000.0).abs() < 0.01);
+        // a 14500 rpm engine on a bank running 9000 rpm past its table: squeezed into
+        // 15500..25000, in order, everything past the limiter's overshoot
+        let f = unreached_band(12000.0, 21000.0, 14500.0, 25000.0);
+        assert!((f(12000.0) - 16000.0).abs() < 0.01 && (f(21000.0) - 25000.0).abs() < 0.01);
+        let f = unreached_band(6000.0, 26000.0, 14500.0, 25000.0);
+        assert!(f(6000.0) >= 15500.0 - 0.01 && (f(26000.0) - 25000.0).abs() < 0.01);
+        assert!(f(10000.0) < f(10100.0));
+        // past the bank's own top: held there
+        assert!((f(30000.0) - 25000.0).abs() < 0.01);
+        // a limiter at the game's top: above it, 1:1
+        let f = unreached_band(20000.0, 22000.0, 24500.0, 25000.0);
+        assert!((f(20000.0) - 25500.0).abs() < 0.01 && (f(21000.0) - 26500.0).abs() < 0.01);
     }
 
     #[test]
