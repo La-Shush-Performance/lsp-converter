@@ -199,6 +199,56 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// The stock ECU start assist (EngineData `startECUAssist`), the medians of
+/// the 24 stock engines with a full one (content.kspkg, 8 Nov 2026): rpm
+/// range 1500 (p25 1500, p75 2000), gain 0.2, active under 100 km/h, slip
+/// ratio target 0.1, through the clutch; the launch rev limit 0.544 x the
+/// engine's limiter (p25 0.447, p75 0.676). 15 of the 24 set no clutch or
+/// gas gain, so ours sets none either.
+const START_ASSIST_RPM_RANGE: f64 = 1500.0;
+const START_ASSIST_GAIN: f64 = 0.2;
+const START_ASSIST_SPEED_KMH: f64 = 100.0;
+const START_ASSIST_SLIP: f64 = 0.1;
+const START_ASSIST_LAUNCH_OF_LIMITER: f64 = 0.544;
+/// Road cars built from this year on get it (the stock ones with one are
+/// 2015 on, bar the 2000 M3 E46 and the 2004 F2004; none built before 2000
+/// has a full one).
+const START_ASSIST_FROM_YEAR: u32 = 2000;
+
+/// OURS (profile rule 10): the stock ECU start assist, which slips the clutch
+/// so a modern Kunos car does not stall pulling away. AC1 has none, and
+/// converted cars stalled pulling away where Kunos cars did not (the user, 8
+/// Nov 2026). Stock gives it to modern road and cup cars and not to the old
+/// ones (240Z, AE86, MX-5 NA, F40, NSX-R), so a road car gets it when it was
+/// built in 2000 or later or has traction control; a race car always.
+pub fn start_assist(c: &mut Ctx) -> Result<()> {
+    if !c.d.profile.rules().start_assist {
+        return Ok(());
+    }
+    let year = c.car.ui("year").and_then(|y| y.parse::<f64>().ok()).map(|y| y as u32);
+    let race = c.d.profile == super::profile::Profile::Race;
+    let modern = year.map_or(false, |y| y >= START_ASSIST_FROM_YEAR);
+    if !(race || modern || c.d.has_tc) {
+        c.note(format!("physics: no ECU start assist (a road car from {}, no traction control; old stock cars have none)", year.map_or("an unknown year".to_string(), |y| y.to_string())));
+        return Ok(());
+    }
+    let launch = ((START_ASSIST_LAUNCH_OF_LIMITER * c.d.limiter) / 100.0).round() * 100.0;
+    let e = at(&mut c.cd, &[4])?;
+    e.remove(19);
+    let mut a = Msg::default();
+    f(&mut a, 1, START_ASSIST_RPM_RANGE);
+    f(&mut a, 2, START_ASSIST_GAIN);
+    f(&mut a, 3, START_ASSIST_SPEED_KMH);
+    f(&mut a, 4, launch);
+    f(&mut a, 6, START_ASSIST_SLIP);
+    pbx::b(&mut a, 7, true);
+    e.push(19, Val::Msg(a));
+    e.fields.sort_by_key(|x| x.num);
+    let why = if race { "a race car".to_string() } else if modern { format!("built {}", year.unwrap_or(0)) } else { "traction control".to_string() };
+    c.note(format!("physics: stock ECU start assist ({why}): rpm range {START_ASSIST_RPM_RANGE:.0}, gain {START_ASSIST_GAIN}, under {START_ASSIST_SPEED_KMH:.0} km/h, launch limit {launch:.0} rpm, slip {START_ASSIST_SLIP}, through the clutch"));
+    Ok(())
+}
+
 /// Stock coast curves cross 0 well above idle: the zero crossing over idle,
 /// median 1.57, p25 1.33, p10 1.21, over the 74 stock combustion engines with
 /// a coast curve and an idle (content.kspkg, 7 Nov 2026). Ours sits a hair under

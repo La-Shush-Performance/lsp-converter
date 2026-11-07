@@ -21,6 +21,10 @@
 //! | 7 roll balance into range     | yes  | yes  | no    | no    |
 //! | 8 dampers adjustable          | yes  | yes  | no    | no    |
 //! | 9 damping up to stock median  | yes  | no   | no    | no    |
+//! | 10 stock ECU start assist     | 2000+| yes  | no    | no    |
+//!
+//! Rule 10 on a road car: built 2000 or later (ui_car.json "year") or with
+//! traction control (engine.rs, `start_assist`).
 //!
 //! Not a rule: TC and ABS levels are always written in EVO's lightest-first
 //! order (chassis.rs); Exact keeps AC1's starting level as the default.
@@ -145,6 +149,7 @@ pub struct Rules {
     pub roll_balance: bool,
     pub dampers: bool,
     pub damping: bool,
+    pub start_assist: bool,
 }
 
 impl Profile {
@@ -174,6 +179,8 @@ impl Profile {
             // (the Neonstride, 1 Nov: AC1 damping drove a lot better than the
             // median floor; the GT3 RS road car, 30 Oct: the floor helped)
             damping: on(9, self == Profile::Road),
+            // not drift: the launch rev limit and slip target fight a clutch kick
+            start_assist: on(10, grip),
         }
     }
 }
@@ -277,6 +284,7 @@ mod tests {
         assert!(!e.edl_off && !e.ebb_bias && !e.steering);
         assert!(Profile::Road.rules().steering && Profile::Race.rules().alignment);
         assert!(Profile::Road.rules().roll_balance && !d.roll_balance && !e.dampers);
+        assert!(Profile::Road.rules().start_assist && Profile::Race.rules().start_assist && !d.start_assist && !e.start_assist);
         assert!(Profile::Road.rules().damping && !Profile::Race.rules().damping && Profile::Race.rules().dampers);
     }
 }

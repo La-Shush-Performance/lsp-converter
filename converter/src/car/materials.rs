@@ -547,7 +547,7 @@ pub enum Role {
     Splat,
 }
 
-/// An AC1 tiled detail map laid as the EVO Blue layer (ours; see
+/// An AC1 tiled detail map laid as the EVO Green layer (ours; see
 /// `Tex::detail_layer`).
 pub struct DetailLayer {
     /// the detail as a colour map (textured details) ...
@@ -1135,16 +1135,21 @@ impl<'a> Tex<'a> {
     }
 }
 
-/// Lay `d` as the material's Blue layer: every attribute multiplies (the
-/// layer's own value 1 leaves it as the base has it) except the colour,
-/// which takes the detail map; normals combine. Blue: the layer no paint
-/// channel drives (the converter's designs customise the primary channel
-/// only, which recolours Red).
+/// Lay `d` as the material's Green layer: the colour multiplies the base
+/// by the detail map; every other attribute has neither switch and stays as
+/// the base has it; normals combine. Green: a layer no paint channel drives
+/// (the converter's designs customise the primary channel only, which
+/// recolours Red) that has the multiply switches Blue lacks.
 pub fn apply_detail(s: &mut Msg, d: &DetailLayer) {
-    // ACECONV_DETAIL_LAYER=Red: a dev switch for previews in viewers that
-    // draw only the Red layer's map (Red is the primary paint channel; do
-    // not ship it)
-    let l = std::env::var("ACECONV_DETAIL_LAYER").ok().filter(|v| v == "Red" || v == "Green").unwrap_or_else(|| "Blue".into());
+    // The Green layer: the UberVehicleMaterial's Blue layer has no
+    // OverrideMultiply_* switches at all (Red and Green have 13 each), so a
+    // Blue detail layer never multiplied: `setp` skipped the switch, the layer
+    // left the colour as the base had it and only its weave normals showed.
+    // The La Shush Old Man's ext_carbon (mid-grey diffuse x dark carbon at 45,
+    // near black in AC1) drew white in the sun on the scuttle, mirrors and
+    // rear panels (8 Nov 2026), as the S14's splitter had. Red is the paint
+    // channel. ACECONV_DETAIL_LAYER=Red / Blue: a dev switch (do not ship).
+    let l = std::env::var("ACECONV_DETAIL_LAYER").ok().filter(|v| v == "Red" || v == "Blue").unwrap_or_else(|| "Green".into());
     let l = l.as_str();
     let k = |n: &str| format!("{l}{n}");
     setp(s, &k("_Enable"), &[1.0]);

@@ -292,6 +292,7 @@ pub fn write(files: &mut Files, id: &str, stem: &str, car: &Car, frame: &Frame, 
     drivetrain::write(&mut c)?;
     chassis::brakes_steering(&mut c)?;
     chassis::electronics(&mut c)?;
+    engine::start_assist(&mut c)?;
     tyres::write(&mut c)?;
     chassis::brake_strength(&mut c)?;
     suspension::write(&mut c)?;
