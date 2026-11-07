@@ -56,16 +56,18 @@ fn chunk<'a>(it: &'a Node, id: &[u8; 4]) -> Result<&'a [u8]> {
 fn bus(list: [u8; 4], it: &Node, head: &[u8; 4]) -> Result<Bus> {
     let mut r = R::new(chunk(it, head)?);
     let id = r.guid()?;
-    let (output, out_mode) = r.sub(|s| Ok((s.guid()?, s.u32()?)))?;
+    // a 0x38 master bus header is the id alone (no output: it is the event's top)
+    let (output, out_mode) = if r.left() > 0 { r.sub(|s| Ok((s.guid()?, s.u32()?)))? } else { (Guid::ZERO, 7) };
     // 1.08 BUS: u8 flags, u32 input mode, [pre], [post], {f32 volume, f32}, u32 max instances, u32 stealing
+    // (0x38 banks end after the volume: unlimited instances, oldest stolen, as 1.08 writes them)
     let mut r = R::new(chunk(it, b"BUS ")?);
     let flags = r.u8()? as u32;
     let in_mode = r.u32()?;
     let pre = r.guids()?;
     let post = r.guids()?;
     let volume = r.sub(|s| s.f32())?;
-    let max_inst = r.u32()?;
-    let steal = r.u32()?;
+    let max_inst = if r.left() >= 4 { r.u32()? } else { 0x7fff_ffff };
+    let steal = if r.left() >= 4 { r.u32()? } else { 0 };
     Ok(Bus { list, id, output, out_mode, flags, in_mode, pre, post, volume, vcas: Vec::new(), max_inst, steal, props: br::prps(it)? })
 }
 
@@ -93,9 +95,12 @@ fn inst(b: &[u8]) -> Result<Inst> {
     let max_voices = r.u32()?;
     let (bus, fmt) = r.sub(|s| Ok((s.guid()?, s.u32()?)))?;
     let steal = r.u32()?;
-    let tl_off = r.u32()?;
-    let start_off = r.f32()?;
-    let _ = r.f32()?;
+    // 0x38 banks end here (no timeline / start offsets)
+    let tl_off = if r.left() >= 4 { r.u32()? } else { 0 };
+    let start_off = if r.left() >= 4 { r.f32()? } else { 0.0 };
+    if r.left() >= 4 {
+        r.f32()?;
+    }
     let code = if r.left() >= 4 { r.code()? } else { Vec::new() };
     Ok(Inst { timeline, volume, pitch, loops, cutoff, prob, dmin, dmax, ap_param, ap_root, ap_min, max_voices, bus, fmt, steal, tl_off, start_off, code,
         props: Vec::new() })
@@ -104,6 +109,14 @@ fn inst(b: &[u8]) -> Result<Inst> {
 /// 1.08 pan DSP (21 parameters) -> the 2.03 one (24): 2D height blend 0, attenuation range
 /// (empty data), override range on (1.08 spatialisers carry their own min / max distance).
 fn pan_203(mut p: Vec<PVal>) -> Vec<PVal> {
+    // 0x38 (20 parameters): the first (the 2D / 3D mode, 2 on every bank seen) a float, and no
+    // 21st (7 on every 1.08 bank seen)
+    if p.len() == 20 {
+        if let Some(PVal::F(v)) = p.first().cloned() {
+            p[0] = PVal::I(v.round() as i32);
+        }
+        p.push(PVal::I(7));
+    }
     if p.len() == 21 {
         p.push(PVal::F(0.0));
         p.push(PVal::D(Vec::new()));
@@ -160,17 +173,26 @@ pub fn read(data: &[u8]) -> Result<Ac1Bank> {
         _ => None,
     }).ok_or_else(|| anyhow!("bank without FMT"))?;
     let ver = u32::from_le_bytes(fmt[0..4].try_into().unwrap());
-    if ver != FORMAT {
-        bail!("bank format version {ver:#x} (the AC1 reader knows {FORMAT:#x} = FMOD Studio 1.08)");
+    // 0x37 / 0x38: an older FMOD Studio (3 of the 363 car banks of an AC1 install: the HillClimb
+    // 488 GTE and the street pack GT86 at 0x38, the La Shush Machine at 0x37; AC1's 1.08 runtime
+    // loads them): the same items, some shorter (BUS, INST, MBSB, BEFB, EVTB, BNKI), WAIB with a
+    // u32 before the audio file, the pan DSP with 20 parameters. 0x37 and 0x38 lay out alike.
+    let old = ver == 0x37 || ver == 0x38;
+    if ver != FORMAT && !old {
+        bail!("bank format version {ver:#x} (the AC1 reader knows {FORMAT:#x} = FMOD Studio 1.08, and 0x37 / 0x38)");
     }
     let proj = top.iter().find(|n| matches!(n, Node::List(t, _) if t == b"PROJ")).ok_or_else(|| anyhow!("bank without PROJ"))?;
     let mut bk = Bank::default();
     if let Some(b) = proj.chunk(b"BNKI") {
         let mut r = R::new(b);
         bk.id = r.guid()?;
-        r.u32()?;
-        r.u32()?;
-        bk.n_events = r.u32()?;
+        if r.left() >= 12 {
+            r.u32()?;
+            r.u32()?;
+            bk.n_events = r.u32()?;
+        } else {
+            bk.n_events = items(proj, b"EVTS").len() as u32;
+        }
     }
     for (l, head) in [(b"IBSS", b"IBSB"), (b"GBSS", b"GBSB"), (b"RBSS", b"RBSB"), (b"MBSS", b"MBSB")] {
         for it in items(proj, l) {
@@ -235,6 +257,10 @@ pub fn read(data: &[u8]) -> Result<Ac1Bank> {
         let _nums = r.arr(|s| Ok((s.str()?, s.u32()?)))?;
         let user_props = r.arr(|s| Ok((s.str()?, s.str()?)))?;
         let doppler = r.f32()?;
+        // 0x37 / 0x38: a u16 before the stealing mode, nothing after it
+        if old && r.left() == 6 {
+            r.u16()?;
+        }
         let steal = r.u32().unwrap_or(2);
         let mut flags = 0x1441 | 0x20;
         if doppler > 0.0 {
@@ -367,8 +393,14 @@ pub fn read(data: &[u8]) -> Result<Ac1Bank> {
     }
     // ---- instruments
     for it in items(proj, b"WAIS") {
-        let mut r = R::new(chunk(it, b"WAIB")?);
-        let (id, audio) = (r.guid()?, r.guid()?);
+        let b = chunk(it, b"WAIB")?;
+        let mut r = R::new(b);
+        let id = r.guid()?;
+        // 0x38: a u32 between the instrument and its audio file
+        if b.len() == 36 {
+            r.u32()?;
+        }
+        let audio = r.guid()?;
         let mut i = inst(chunk(it, b"INST")?).with_context(|| format!("sound {id}"))?;
         i.props = br::prps(it)?;
         bk.instruments.insert(id, Instrument::Wave { id, audio, inst: i });

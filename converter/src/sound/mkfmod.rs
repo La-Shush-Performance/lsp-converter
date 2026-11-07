@@ -338,24 +338,27 @@ fn prop_name(class: &str, index: u32) -> Option<String> {
     })
 }
 
+/// The value a stored curve point stands for, through the map (nearest, not always exact in f32).
+fn map_fwd(pts: &[(f32, f32)], y: f32) -> f32 {
+    let n = pts.len();
+    let y = y as f64;
+    if y <= pts[0].0 as f64 {
+        return pts[0].1;
+    }
+    for w in pts.windows(2) {
+        let ((x0, y0), (x1, y1)) = ((w[0].0 as f64, w[0].1 as f64), (w[1].0 as f64, w[1].1 as f64));
+        if y <= x1 {
+            return (if x1 == x0 { y1 } else { y0 + (y - x0) / (x1 - x0) * (y1 - y0) }) as f32;
+        }
+    }
+    let (x0, y0) = (pts[n - 2].0 as f64, pts[n - 2].1 as f64);
+    let (x1, y1) = (pts[n - 1].0 as f64, pts[n - 1].1 as f64);
+    (y0 + (y - x0) / (x1 - x0) * (y1 - y0)) as f32
+}
+
 /// Inverse of the writer's unmap (value -> stored curve domain), exact in f32.
 fn map_value(pts: &[(f32, f32)], y: f32) -> Option<f32> {
-    let n = pts.len();
-    let fwd = |y: f64| -> f64 {
-        if y <= pts[0].0 as f64 {
-            return pts[0].1 as f64;
-        }
-        for w in pts.windows(2) {
-            let ((x0, y0), (x1, y1)) = ((w[0].0 as f64, w[0].1 as f64), (w[1].0 as f64, w[1].1 as f64));
-            if y <= x1 {
-                return if x1 == x0 { y1 } else { y0 + (y - x0) / (x1 - x0) * (y1 - y0) };
-            }
-        }
-        let (x0, y0) = (pts[n - 2].0 as f64, pts[n - 2].1 as f64);
-        let (x1, y1) = (pts[n - 1].0 as f64, pts[n - 1].1 as f64);
-        y0 + (y - x0) / (x1 - x0) * (y1 - y0)
-    };
-    let v0 = fwd(y as f64) as f32;
+    let v0 = map_fwd(pts, y);
     let step = |v: f32, up: bool| -> f32 {
         if v == 0.0 {
             return if up { f32::from_bits(1) } else { -f32::from_bits(1) };
@@ -428,9 +431,13 @@ impl<'a> Gen<'a> {
                     for (k, (x, y, shape, fl)) in cv.pts.iter().enumerate() {
                         let pid = dg(&format!("point:{c}:{k}"));
                         let val = match &pts_map {
+                            // no exact f32 round trip (the HillClimb 488 GTE's 0x38 bank, on the fader map's
+                            // one-to-one stretch): the map's nearest value, never the stored one, which is
+                            // only right where the map is one-to-one
                             Some(m) if m.len() >= 2 => map_value(m, *y).unwrap_or_else(|| {
-                                self.notes.push(format!("curve {c}: no exact value for stored {y}"));
-                                *y
+                                let v = map_fwd(m, *y);
+                                self.notes.push(format!("curve {c}: stored {y} -> {v} (nearest, no exact f32 round trip)"));
+                                v
                             }),
                             _ => *y,
                         };

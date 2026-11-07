@@ -54,6 +54,7 @@ pub fn open_source(car_dir: &Path) -> Result<Source> {
     if cands.is_empty() {
         bail!("no .bank in {}", sfx.display());
     }
+    let has_own = cands.first().and_then(|p| p.file_stem()).map(|f| f.to_string_lossy().eq_ignore_ascii_case(&folder)).unwrap_or(false);
     let mut guids: Vec<(Guid, String)> = Vec::new();
     let shared = car_dir.parent().and_then(|p| p.parent()).map(|c| c.join("sfx").join("GUIDs.txt"));
     // a Kunos car copied out of the install still has its names in the
@@ -87,9 +88,212 @@ pub fn open_source(car_dir: &Path) -> Result<Source> {
             last = anyhow!("{}: no GUIDs.txt names its events", bank.display());
             continue;
         }
+        // OURS: another bank in the folder stands in only with the car's own event names. The
+        // La Shush Machine's own bank was unreadable and a leftover bank beside it, named by the
+        // install's GUIDs.txt as ks_mercedes_c9's, gave it the C9's engine.
+        let own_bank = bank.file_stem().map(|f| f.to_string_lossy().eq_ignore_ascii_case(&folder)).unwrap_or(false);
+        let own_names = format!("event:/cars/{}/", folder.to_lowercase());
+        if !own_bank && has_own && !names.values().any(|p| p.to_lowercase().starts_with(&own_names)) {
+            last = anyhow!("{}: its events are another car's ({}), and the car's own bank could not be read: {last:#}", bank.display(),
+                names.values().next().cloned().unwrap_or_default());
+            continue;
+        }
         return Ok(Source { ac1, bank_path: bank, names, paths });
     }
     Err(last)
+}
+
+// ------------------------------------------------------------------ CSP rpm transform
+/// A CSP `[AUDIO_PARAMETER_TRANSFORM]` table: (physics value, value the sound bank sees),
+/// sorted by the physics value. Written inline, `(| 0=0 | 1900=1900 | 8798=6900 |)`, or as a
+/// .lut file (`a|b` lines) next to ext_config.ini.
+fn csp_lut(v: &str, dir: &Path) -> Option<Vec<(f32, f32)>> {
+    let v = v.trim();
+    let text = if v.starts_with('(') {
+        v.trim_start_matches('(').trim_end_matches(')').replace('|', "\n").replace('=', "|")
+    } else {
+        String::from_utf8_lossy(&std::fs::read(dir.join(v)).ok()?).into_owned()
+    };
+    let mut pts: Vec<(f32, f32)> = text.lines().filter_map(|l| {
+        let (a, b) = l.split_once('|')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    }).collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (pts.len() >= 2).then_some(pts)
+}
+
+/// The inverse of a CSP rpm transform: the physics rpm at which the bank sees `s`. `None` when
+/// the table never reaches `s` (CSP never plays the bank there). Below the table's first point
+/// the first slope carries on.
+struct RpmWarp {
+    pts: Vec<(f32, f32)>,
+    /// the highest value the bank ever sees
+    smax: f32,
+}
+
+impl RpmWarp {
+    fn new(pts: Vec<(f32, f32)>) -> Option<RpmWarp> {
+        // only a table the bank's value never falls in can be turned round
+        if pts.windows(2).any(|w| w[1].1 < w[0].1) || pts.iter().all(|p| (p.0 - p.1).abs() < 0.5) {
+            return None;
+        }
+        let smax = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+        Some(RpmWarp { pts, smax })
+    }
+    fn inv(&self, s: f32) -> Option<f32> {
+        if s > self.smax + 0.5 {
+            return None;
+        }
+        let p = &self.pts;
+        if s <= p[0].1 {
+            let k = (p[1].1 - p[0].1) / (p[1].0 - p[0].0).max(1e-6);
+            return Some(if k > 1e-6 { p[0].0 + (s - p[0].1) / k } else { p[0].0 });
+        }
+        for w in p.windows(2) {
+            if s <= w[1].1 && w[1].1 > w[0].1 {
+                return Some(w[0].0 + (s - w[0].1) / (w[1].1 - w[0].1) * (w[1].0 - w[0].0));
+            }
+        }
+        Some(p.iter().find(|q| q.1 >= self.smax - 0.5).map(|q| q.0).unwrap_or(p[p.len() - 1].0))
+    }
+    /// The rising segment the bank value `s` falls in: (physics, bank) at its start and its slope.
+    fn segment(&self, s: f32) -> (f32, f32, f32) {
+        let p = &self.pts;
+        let mut best = (p[0].0, p[0].1, 1.0);
+        for w in p.windows(2) {
+            if w[1].1 > w[0].1 {
+                best = (w[0].0, w[0].1, (w[1].1 - w[0].1) / (w[1].0 - w[0].0).max(1e-6));
+                if s <= w[1].1 {
+                    break;
+                }
+            }
+        }
+        best
+    }
+}
+
+fn warp_code(code: &[u8], rpm: &BTreeSet<Guid>, f: &dyn Fn(f32) -> f32) -> Vec<u8> {
+    let mut out = code.to_vec();
+    let mut i = 0;
+    while i + 4 <= out.len() {
+        let t = u32::from_le_bytes(out[i..i + 4].try_into().unwrap());
+        i += 4;
+        if t == 0x11 && i + 28 <= out.len() {
+            if rpm.contains(&Guid(out[i..i + 16].try_into().unwrap())) {
+                for k in [i + 20, i + 24] {
+                    let v = f32::from_le_bytes(out[k..k + 4].try_into().unwrap());
+                    out[k..k + 4].copy_from_slice(&f(v).to_le_bytes());
+                }
+            }
+            i += 28;
+        }
+    }
+    out
+}
+
+/// OURS: CSP's `[AUDIO_PARAMETER_TRANSFORM]` `ENGINE_EXT_RPMS` / `ENGINE_INT_RPMS` hand the
+/// engine events a remapped rpm in AC1; the game hands them the real one. The transform is
+/// moved into the bank instead: every rpm position (sheet ranges, trigger ranges, automation
+/// points) goes to the physics rpm where CSP's bank saw it, autopitch keeps the pitch CSP gave
+/// on the segment its root sits on, and layers placed above anything CSP ever lets the bank see
+/// are left out. The La Shush Momentum Ice: physics 8798 rpm -> bank 6900, its engine layers
+/// end at 7000 and its next layers start at 10000+, so the game went silent from 7000 rpm up.
+fn csp_rpm_transform(src: &mut Source, car_dir: &Path) -> Vec<String> {
+    let mut notes = Vec::new();
+    let Some((path, secs)) = crate::car::fx::csp_config_at(car_dir, &car_dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()) else {
+        return notes;
+    };
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let get = |k: &str| secs.iter().filter(|s| s.name.eq_ignore_ascii_case("AUDIO_PARAMETER_TRANSFORM")).find_map(|s| s.get(k).map(str::to_string));
+    let ext = get("ENGINE_EXT_RPMS").and_then(|v| csp_lut(&v, &dir)).and_then(RpmWarp::new);
+    let int = get("ENGINE_INT_RPMS").and_then(|v| csp_lut(&v, &dir)).and_then(RpmWarp::new);
+    if ext.is_none() && int.is_none() {
+        return notes;
+    }
+    let a = &mut src.ac1;
+    let is_rpm = |p: &br::Param| p.ptype == 0 && matches!(p.name.as_str(), "rpms" | "rpm");
+    for (ev, path) in src.names.clone() {
+        let leaf = path.rsplit('/').next().unwrap_or("").to_lowercase();
+        let w = match leaf.as_str() {
+            "engine_int" => int.as_ref().or(ext.as_ref()),
+            "engine_ext" => ext.as_ref().or(int.as_ref()),
+            _ => None,
+        };
+        let Some(w) = w else { continue };
+        let Some(e) = a.bank.events.get(&ev) else { continue };
+        // pinst holds event ^ parameter (2.03 derived ids)
+        let rpm: BTreeSet<Guid> = e.pinst.iter().map(|g| g.xor(&ev)).filter(|g| a.bank.params.get(g).map(is_rpm).unwrap_or(false)).collect();
+        if rpm.is_empty() {
+            continue;
+        }
+        let s = match collect(a, ev) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // past the table's end the bank is never driven: anything there is placed past the top
+        let pmax = rpm.iter().filter_map(|g| a.bank.params.get(g)).map(|p| p.max).fold(0.0f32, f32::max);
+        let top = w.inv(w.smax).unwrap_or(0.0);
+        let f = |v: f32| w.inv(v).unwrap_or_else(|| (top + (v - w.smax)).max(top));
+        // layers CSP never lets the bank reach
+        let mut gone = 0;
+        for i in &s.top {
+            if let Some((gp, lo, _)) = a.sheet.get(i).copied() {
+                if rpm.contains(&gp) && lo > w.smax + 0.5 {
+                    a.bank.instruments.remove(i);
+                    gone += 1;
+                }
+            }
+        }
+        if let Some(v) = a.event_insts.get_mut(&ev) {
+            v.retain(|i| a.bank.instruments.contains_key(i));
+        }
+        let mut new_max = pmax;
+        for i in &s.insts {
+            for pl in [a.sheet.get_mut(i).into_iter().collect::<Vec<_>>(), a.sheets.get_mut(i).map(|v| v.iter_mut().collect()).unwrap_or_default()].into_iter().flatten() {
+                if rpm.contains(&pl.0) {
+                    let (lo, hi) = (f(pl.1), f(pl.1 + pl.2));
+                    new_max = new_max.max(hi);
+                    *pl = (pl.0, lo, (hi - lo).max(1.0));
+                }
+            }
+            if let Some(c) = a.cond.get_mut(i) {
+                *c = warp_code(c, &rpm, &f);
+            }
+            let Some(it) = a.bank.instruments.get_mut(i) else { continue };
+            let ins = inst_mut(it);
+            ins.code = warp_code(&ins.code, &rpm, &f);
+            // pitch = min + (1 - min) * v / root on the bank's value; on the physics rpm, over the
+            // segment the root sits on: v = s0 + k (p - p0)
+            if rpm.contains(&ins.ap_param) && ins.ap_root > 0.0 {
+                let (p0, s0, k) = w.segment(ins.ap_root);
+                let (m, r) = (ins.ap_min, ins.ap_root);
+                let m2 = m + (1.0 - m) * (s0 - k * p0) / r;
+                if m2 < 0.999 && k > 1e-6 {
+                    ins.ap_root = (1.0 - m2) * r / ((1.0 - m) * k);
+                    ins.ap_min = m2;
+                }
+            }
+        }
+        for c in &s.curves {
+            if a.curve_param.get(c).map(|p| rpm.contains(p)).unwrap_or(false) {
+                if let Some(cv) = a.bank.curves.get_mut(c) {
+                    for pt in cv.pts.iter_mut() {
+                        let x = f(f32::from_bits(pt.0));
+                        new_max = new_max.max(x);
+                        pt.0 = x.to_bits();
+                    }
+                }
+            }
+        }
+        for g in &rpm {
+            if let Some(p) = a.bank.params.get_mut(g) {
+                p.max = p.max.max(new_max.ceil());
+            }
+        }
+        notes.push(format!("sound: {leaf}: CSP rpm transform moved into the bank (bank {:.0} rpm at physics {top:.0}){}", w.smax,
+            if gone > 0 { format!(", {gone} layer(s) above it left out") } else { String::new() }));
+    }
+    notes
 }
 
 /// The bank's own parameters as generator definitions.
@@ -577,6 +781,16 @@ fn tilt_for(rise: f32, range: (f32, f32)) -> f32 {
     (to - rise).clamp(-RISE_CAP, RISE_CAP)
 }
 
+/// OURS: the interior engine's range on `engine_distance` (the listener's distance), dB:
+/// full within 3.3 m, silent from 5.5 m, the gate on every stock interior engine decompiled
+/// (ks_abarth_695_biposto, ks_mazda_mx5_na, ks_bmw_m4_gt3 carry exactly this; the 992 GT3 Cup
+/// and 488 Challenge Evo stop it through a 2 .. 7.5 m spatialiser; all five fade the whole
+/// event to -63 .. -80 dB by 20 m). AC1 interior events often reach 50 m: in cockpit and
+/// bonnet view converted cars got louder by the start-line barriers and quieter on open track,
+/// stock cars steady (7 Nov 2026), the cockpit sound coming back off the walls. The cockpit and
+/// bonnet cameras sit about 1.1 / 1.3 m from the engine slot (the car's origin).
+const INT_DISTANCE_GATE: [(f32, f32); 2] = [(3.3, 0.0), (5.5, -80.0)];
+
 /// The engine gate by rpm: silent when the engine is not turning, plus `tilt` dB spread linearly
 /// over 1000 rpm -> the limiter (centred, so it moves the balance, not the level).
 fn gate_points(tilt: f32, lim: f32) -> Vec<(f32, f32)> {
@@ -607,7 +821,8 @@ pub fn level_shots<'a>(ext: &'a str, int: &'a str, lim: f32) -> Vec<super::rende
 /// Convert the AC1 car's sounds: build, measure the engine level through the game's runtime,
 /// rebuild at the target level.
 pub fn build(car_dir: &Path, o: &Opts) -> Result<Built> {
-    let src_bank = open_source(car_dir)?;
+    let mut src_bank = open_source(car_dir)?;
+    let csp_notes = csp_rpm_transform(&mut src_bank, car_dir);
     let gm = game(&o.content)?;
     let q = match o.vorbis {
         Some(q) => q,
@@ -701,6 +916,7 @@ pub fn build(car_dir: &Path, o: &Opts) -> Result<Built> {
     } else if !tilt_note.is_empty() {
         tilt_note.push_str(" (TEST BUILD: ACECONV_SOUND_TILT=1)");
     }
+    b.notes.extend(csp_notes);
     b.notes.push(format!("sound: {level_note}{tilt_note}; gains {}", Role::ALL.iter().map(|r| format!("{} {:+.1}", r.name(), gains[r])).collect::<Vec<_>>().join(", ")));
     Ok(b)
 }
@@ -852,10 +1068,16 @@ fn pass(src_bank: &Source, gm: &Game, o: &Opts, gains: &HashMap<Role, f32>, tilt
         if matches!(role, Role::EngineInt | Role::EngineExt) {
             let rp = gpar("rpms")?;
             let t = tilts.get(&role).copied().unwrap_or(0.0);
-            w.gate(e.master_bus, rp, &gate_points(t, o.limiter.unwrap_or(7000.0)), &o.car_id);
+            w.gate("gate", e.master_bus, rp, &gate_points(t, o.limiter.unwrap_or(7000.0)), &o.car_id);
             if t != 0.0 {
                 notes.push(format!("sound: {}: rpm balance tilted {t:+.1} dB from 1000 rpm to the limiter", role.name()));
             }
+        }
+        // OURS: the interior engine carries only as far as stock's (INT_DISTANCE_GATE)
+        if role == Role::EngineInt {
+            let dp = gpar("engine_distance")?;
+            w.gate("distance", e.master_bus, dp, &INT_DISTANCE_GATE, &o.car_id);
+            notes.push(format!("sound: engine_int: heard within {:.1} m, silent from {:.1} m (stock interior range)", INT_DISTANCE_GATE[0].0, INT_DISTANCE_GATE[1].0));
         }
         // the level offset sits on the event's mixer input (never automated; the runtime caps a bus
         // at +10 dB), any boost beyond that on the master
@@ -1206,9 +1428,9 @@ impl Work<'_> {
         }
     }
 
-    /// A volume curve on a bus driven by `gp` (points in dB).
-    fn gate(&mut self, bus: Guid, gp: Guid, pts: &[(f32, f32)], car: &str) {
-        let cid = seeded(car, "gate", &bus);
+    /// A volume curve on a bus driven by `gp` (points in dB); `tag` keeps several on one bus apart.
+    fn gate(&mut self, tag: &str, bus: Guid, gp: Guid, pts: &[(f32, f32)], car: &str) {
+        let cid = seeded(car, tag, &bus);
         let curve = Curve { id: cid, g2: cid, pts: pts.iter().map(|(x, db)| (x.to_bits(), ac1bank::db_fader(*db), 0.0, 0)).collect() };
         self.curves.insert(cid, curve);
         self.curve_param.insert(cid, gp);
@@ -1242,6 +1464,31 @@ mod tests {
         let r = remap_code(&c, &|g: &Guid| if *g == a { b } else { *g });
         assert_eq!(code_params(&r), vec![b, b]);
         assert_eq!(r.len(), c.len());
+    }
+
+    #[test]
+    fn csp_rpm_transform_inverse() {
+        // the La Shush Momentum Ice: physics 8798 -> bank 6900, flat after
+        let pts = csp_lut("(| 0=0 | 1900=1900 | 8798=6900 | 20000=6900 |)", Path::new(".")).unwrap();
+        assert_eq!(pts.len(), 4);
+        let w = RpmWarp::new(pts).unwrap();
+        assert_eq!(w.smax, 6900.0);
+        assert!((w.inv(1000.0).unwrap() - 1000.0).abs() < 0.01);
+        assert!((w.inv(6900.0).unwrap() - 8798.0).abs() < 0.5);
+        assert!((w.inv(4400.0).unwrap() - (1900.0 + 2500.0 / (5000.0 / 6898.0))).abs() < 0.5);
+        assert!(w.inv(7000.0).is_none());
+        // autopitch: the pitch CSP gave at 5600 on the bank is kept on the physics rpm
+        let (p0, s0, k) = w.segment(5600.0);
+        let (m, r) = (0.0f32, 5600.0f32);
+        let m2 = m + (1.0 - m) * (s0 - k * p0) / r;
+        let r2 = (1.0 - m2) * r / ((1.0 - m) * k);
+        for p in [3000.0f32, 6000.0, 8798.0] {
+            let want = (s0 + k * (p - p0)) / r;
+            assert!((m2 + (1.0 - m2) * p / r2 - want).abs() < 1e-4, "{p}");
+        }
+        // a table that is the identity, or that falls back, is left alone
+        assert!(RpmWarp::new(vec![(0.0, 0.0), (9000.0, 9000.0)]).is_none());
+        assert!(RpmWarp::new(vec![(0.0, 0.0), (5000.0, 6000.0), (9000.0, 5000.0)]).is_none());
     }
 
     #[test]
