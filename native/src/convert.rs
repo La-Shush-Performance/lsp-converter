@@ -71,6 +71,34 @@ pub fn converter() -> Option<PathBuf> {
 /// The converter's source revision (converter/UPSTREAM_REV at build time).
 pub const CONVERTER_REV: &str = env!("ACECM_CONVERTER_REV");
 
+/// The converter's fixes revision (converter/FIXES at build time; see
+/// `aceconv::fixes`). Each car it converts carries it in its `<id>.json`.
+pub const CONVERTER_FIXES: &str = env!("ACECM_CONVERTER_FIXES");
+
+/// Was a car whose `<id>.json` carries these fixes (None: converted before
+/// cars carried any) converted before the converter's newest? Never when this
+/// build doesn't know its converter's (built without converter/). Values
+/// compare as text.
+fn behind_fixes(fixes: Option<&str>) -> bool {
+    !CONVERTER_FIXES.is_empty() && fixes.is_none_or(|f| f < CONVERTER_FIXES)
+}
+
+#[cfg(test)]
+mod behind_fixes_tests {
+    use super::{behind_fixes, CONVERTER_FIXES};
+
+    #[test]
+    fn older_or_unstamped_cars_are_behind() {
+        assert!(!CONVERTER_FIXES.is_empty(), "built without converter/FIXES");
+        assert!(behind_fixes(None));
+        assert!(behind_fixes(Some("2026-11-06")));
+        assert!(!behind_fixes(Some(CONVERTER_FIXES)));
+        // a later fix the same day, and a newer converter than this app's
+        assert!(behind_fixes(Some(CONVERTER_FIXES.split('.').next().unwrap())) == CONVERTER_FIXES.contains('.'));
+        assert!(!behind_fixes(Some("2999-01-01")));
+    }
+}
+
 /// Assetto Corsa's Steam app id.
 const APPID_AC1: &str = "244210";
 
@@ -247,7 +275,8 @@ pub(crate) fn query(args: &[String]) -> Result<Vec<String>, String> {
 pub(crate) fn run_converter(conv: &Path, args: &[String], cwd: &Path) -> Option<(i32, f64, bool)> {
     let t0 = Instant::now();
     let (t, why) = threads();
-    JOB.lock().unwrap().lines.push(format!("LSP Converter: converter {} with {t} thread(s) - {why}", if CONVERTER_REV.is_empty() { "(local build)" } else { CONVERTER_REV }));
+    JOB.lock().unwrap().lines.push(format!("LSP Converter: converter {}{} with {t} thread(s) - {why}", if CONVERTER_REV.is_empty() { "(local build)" } else { CONVERTER_REV },
+        if CONVERTER_FIXES.is_empty() { String::new() } else { format!(", fixes of {CONVERTER_FIXES}") }));
     let mut cmd = command(conv, args);
     cmd.current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
@@ -1001,11 +1030,12 @@ fn kunos_index(root: &Path) -> String {
 }
 
 /// The converted cars in the game's mods folder, by the AC1 folder their
-/// `<id>.json` names (`aceconv_source`, lower case) -> their ids. The same
-/// strong match `aceconv legacy-id` uses, read here from the small sidecars
-/// only, so the car list stays fast.
-fn game_cars_by_source(mods_dir: &Path) -> std::collections::HashMap<String, Vec<String>> {
-    let mut m: std::collections::HashMap<String, Vec<String>> = Default::default();
+/// `<id>.json` names (`aceconv_source`, lower case) -> their ids, each with
+/// the converter fixes it was made with (`aceconv_fixes`, None before cars
+/// carried them). The same strong match `aceconv legacy-id` uses, read here
+/// from the small sidecars only, so the car list stays fast.
+fn game_cars_by_source(mods_dir: &Path) -> std::collections::HashMap<String, Vec<(String, Option<String>)>> {
+    let mut m: std::collections::HashMap<String, Vec<(String, Option<String>)>> = Default::default();
     for e in std::fs::read_dir(mods_dir).into_iter().flatten().flatten() {
         let p = e.path();
         if !p.extension().map(|x| x.eq_ignore_ascii_case("kspkg")).unwrap_or(false) {
@@ -1013,8 +1043,9 @@ fn game_cars_by_source(mods_dir: &Path) -> std::collections::HashMap<String, Vec
         }
         let Some(id) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
         let Some(v) = std::fs::read_to_string(p.with_extension("json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
-        if let Some(src) = v["cars"].as_array().into_iter().flatten().find_map(|c| c["aceconv_source"].as_str()) {
-            m.entry(src.to_lowercase()).or_default().push(id);
+        if let Some(car) = v["cars"].as_array().into_iter().flatten().find(|c| c["aceconv_source"].is_string()) {
+            let src = car["aceconv_source"].as_str().unwrap_or_default().to_lowercase();
+            m.entry(src).or_default().push((id, car["aceconv_fixes"].as_str().map(String::from)));
         }
     }
     m
@@ -1065,13 +1096,20 @@ pub fn cars() -> Value {
         // copies in the game this app's history doesn't account for: made by
         // the old app (ACECM) or an older build. Converting again replaces
         // them (the same-source-folder match), so the car is marked for it.
-        if let Some(ids) = in_game.get(&folder.to_lowercase()) {
+        if let Some(found) = in_game.get(&folder.to_lowercase()) {
             // what the mods folder really holds, whatever the history says
-            c.insert("in_game".into(), json!(!ids.is_empty()));
+            c.insert("in_game".into(), json!(!found.is_empty()));
             let mine = history_id(&hist, &folder, "cars");
-            let old: Vec<&String> = ids.iter().filter(|id| Some(id.as_str()) != mine.as_deref()).collect();
+            let old: Vec<&String> = found.iter().map(|(id, _)| id).filter(|id| Some(id.as_str()) != mine.as_deref()).collect();
             if !old.is_empty() {
                 c.insert("old".into(), json!(old));
+            }
+            // this app's own copy, converted before the converter's newest
+            // fixes: marked too, so converting again brings them in
+            if let Some((_, fixes)) = found.iter().find(|(id, _)| Some(id.as_str()) == mine.as_deref()) {
+                if behind_fixes(fixes.as_deref()) {
+                    c.insert("behind".into(), json!({"fixes": fixes, "now": CONVERTER_FIXES}));
+                }
             }
         }
         out.push(c);

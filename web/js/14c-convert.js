@@ -80,6 +80,17 @@ function cvAgo(t) {
   return Math.round(s / 86400) + ' days ago';
 }
 
+/* A car in the game converted before the converter's newest fixes (the
+   server's `behind`: the fixes it was made with, or none, and today's). */
+function cvBehindText(b) {
+  const m = /^(\d{4})-(\d\d)-(\d\d)/.exec((b && b.now) || '');
+  const day = m ? +m[3] + ' ' + ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+    'September', 'October', 'November', 'December'][+m[2] - 1] + ' ' + m[1] : '';
+  return b && b.fixes && day
+    ? 'Converted before the converter\'s fixes of ' + day + '. Convert it again to get them.'
+    : 'Converted with an earlier version of LSP Converter. Convert it again to bring it up to date.';
+}
+
 /* The converter's check (check-car / check-track), in words. */
 function cvCheckBox(c) {
   const box = el('div', 'cv-check');
@@ -154,9 +165,14 @@ async function convertPage() {
   filt.placeholder = 'Search by name, brand or folder…';
   filt.value = cvFilter;
   const chips = el('div', 'seg');
+  // cars in the game from an older version or before the newest fixes:
+  // their own chip, while there are any
+  const updates = cars.cars.some(c => c.old || c.behind);
+  if (!updates && cvShow === 'upd') cvShow = 'all';
   const chip = (k, label) => { const b = el('button', 'cv-chip' + (cvShow === k ? ' on' : ''), label);
     b.onclick = () => { cvShow = k; chips.querySelectorAll('.cv-chip').forEach(x => x.classList.remove('on')); b.classList.add('on'); paint(); }; return b; };
   chips.append(chip('all', 'All'), chip('new', 'Not converted'), chip('done', 'Converted'));
+  if (updates) chips.append(chip('upd', 'Update available'));
   const count = el('span', 'tiny dim cv-count');
   const addDir = el('button', 'sm', 'Add folder…');
   addDir.title = 'Convert ' + noun + 's that are not installed in Assetto Corsa: pick a folder of downloaded mods. '
@@ -356,8 +372,9 @@ async function convertPage() {
     if (c.protected) return '<span class="cv-tag bad">Protected</span>';
     if (c.kunos) return '<span class="cv-tag">Kunos car</span>';
     const l = c.last;
-    // in the game from the old app (or an older build): a sash across the picture
-    const sash = c.old ? '<span class="cv-sash">Update available</span>' : '';
+    // in the game from the old app (or an older build), or converted before
+    // the converter's newest fixes: a sash across the picture
+    const sash = c.old || c.behind ? '<span class="cv-sash">Update available</span>' : '';
     // "In game" (Quiet Line Blue) only when the mods folder really holds it:
     // cars are checked on disk by the server; tracks go by the install record
     const inGame = T ? !!(l && (l.installed || []).length) : !!(c.in_game || c.old);
@@ -385,6 +402,7 @@ async function convertPage() {
     const shown = all.filter(c => {
       if (cvShow === 'new' && c.last && c.last.ok) return false;
       if (cvShow === 'done' && !(c.last && c.last.ok)) return false;
+      if (cvShow === 'upd' && !(c.old || c.behind)) return false;
       if (c.kunos && !q) return false;
       return !q || [c.folder, c.name, c.brand, c.year, c.class].join(' ').toLowerCase().includes(q);
     });
@@ -399,7 +417,8 @@ async function convertPage() {
       card.title = c.protected ? (T ? 'Protected by its author - click to see its files' : 'Protected by its author - it can\'t be converted')
         : c.kunos ? 'One of Kunos\'s own Assetto Corsa cars - it belongs to Kunos, so it can\'t be converted'
         : c.folder + (c.from ? '\nfrom ' + c.from : '')
-          + (c.old ? '\nIn the game from an older version (' + c.old.join(', ') + '). Convert it again to update it - the old copy is replaced.' : '');
+          + (c.old ? '\nIn the game from an older version (' + c.old.join(', ') + '). Convert it again to update it - the old copy is replaced.' : '')
+          + (c.behind ? '\n' + cvBehindText(c.behind) : '');
       card.dataset.folder = c.folder;
       // small cached thumbnails, loaded only when scrolled into view
       const im = el('div', 'cv-img', tagOf(c));
@@ -586,8 +605,9 @@ async function convertPage() {
     const l = c.last;
     hsub.innerHTML = esc((T ? [c.country, c.length] : [c.brand, c.year, c.power]).filter(Boolean).join(' · '))
       + (l && l.ok ? '<br>Last converted ' + esc(cvAgo(l.at)) + ' in ' + l.secs + ' s'
-        + (l.check ? ' · check: ' + l.check.errors + ' errors, ' + l.check.warnings + ' warnings' : '') : '');
-    go_.textContent = c.old && !T ? 'Update' : l && l.ok ? 'Convert again' : 'Convert';
+        + (l.check ? ' · check: ' + l.check.errors + ' errors, ' + l.check.warnings + ' warnings' : '') : '')
+      + (c.behind && !T ? '<br>' + esc(cvBehindText(c.behind)) : '');
+    go_.textContent = (c.old || c.behind) && !T ? 'Update' : l && l.ok ? 'Convert again' : 'Convert';
     lastId = c.id || '';
     // what Delete removes: the last conversion's id
     delId = (l && l.id) || c.id || '';

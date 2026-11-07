@@ -31,6 +31,31 @@ pub mod stats;
 pub mod track;
 pub mod validate;
 
+/// The converter's fixes revision (`converter/FIXES`): the day of its newest
+/// fix that changes the cars it makes, `.2` .. `.9` for later ones that day
+/// (values compare as text). Each converted car's `<id>.json` carries it as
+/// `aceconv_fixes`, and the app marks a car in the game with an earlier one,
+/// or none (converted before there was one), "Update available". Raise it
+/// with every fix that changes converted cars; app, tool and test-switch
+/// changes leave it.
+pub fn fixes() -> &'static str {
+    include_str!("../FIXES").trim()
+}
+
+#[cfg(test)]
+mod fixes_tests {
+    #[test]
+    fn fixes_is_a_day() {
+        // YYYY-MM-DD, or YYYY-MM-DD.N for a later fix the same day
+        let f = super::fixes();
+        let (day, n) = f.split_once('.').unwrap_or((f, "2"));
+        let b = day.as_bytes();
+        assert!(b.len() == 10 && b[4] == b'-' && b[7] == b'-', "converter/FIXES: {f:?}");
+        assert!(day.split('-').all(|p| p.bytes().all(|c| c.is_ascii_digit())), "converter/FIXES: {f:?}");
+        assert!(n.len() == 1 && (b'2'..=b'9').contains(&n.as_bytes()[0]), "converter/FIXES: {f:?}");
+    }
+}
+
 /// `std::_Xlength_error`, the only C++-runtime function intel_tex_2's prebuilt
 /// ASTC object needs (it was built against the DLL runtime, which this static
 /// build leaves out). ASTC is never used here; abort like the original would.

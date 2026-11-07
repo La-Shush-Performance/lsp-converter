@@ -49,6 +49,12 @@ fn bundle() {
     println!("cargo:rerun-if-changed={}", rev.display());
     let rev = std::fs::read_to_string(&rev).map(|s| s.trim().to_string()).unwrap_or_default();
     println!("cargo:rustc-env=ACECM_CONVERTER_REV={rev}");
+    // the converter's fixes revision (aceconv::fixes): cars in the game
+    // converted before it are marked "Update available"
+    let fixes = repo.join("converter").join("FIXES");
+    println!("cargo:rerun-if-changed={}", fixes.display());
+    let fixes = std::fs::read_to_string(&fixes).map(|s| s.trim().to_string()).unwrap_or_default();
+    println!("cargo:rustc-env=ACECM_CONVERTER_FIXES={fixes}");
     // deflated: the UI shrinks ~4x
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let mut src = String::from("/// (path, deflated bytes, original size)\npub static FILES: &[(&str, &[u8], usize)] = &[\n");

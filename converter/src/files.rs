@@ -179,6 +179,9 @@ pub fn write_mod(files: &mut Files, out_dir: &Path, m: &ModMeta) -> Result<PathB
     if let Some(t) = m.ac1_traction {
         car["aceconv_ac1_traction"] = serde_json::Value::String(t.to_string());
     }
+    // the fixes it was converted with: the app marks it "Update available"
+    // once the converter has newer ones (`crate::fixes`)
+    car["aceconv_fixes"] = serde_json::Value::String(crate::fixes().to_string());
     let json = serde_json::json!({ "cars": [car] });
     std::fs::write(out_dir.join(format!("{}.json", m.id)), serde_json::to_string_pretty(&json)?)?;
     Ok(pkg)
@@ -219,5 +222,20 @@ mod tests {
         let g = Rng::seeded(7).guid();
         assert_eq!(g.len(), 36);
         assert_eq!(&g[14..15], "4");
+    }
+
+    #[test]
+    fn sidecar_carries_the_fixes() {
+        let dir = std::env::temp_dir().join(format!("aceconv-sidecar-{}", std::process::id()));
+        let mut f = Files::default();
+        f.put("content\\cars\\ks_sidecar_test\\data\\a.txt", b"1".to_vec());
+        let m = ModMeta { id: "ks_sidecar_test", mech_preset: "preset_x", display_name: "X", perf: 10.0, source_folder: Some("x"), ac1_traction: Some("RWD") };
+        let made = write_mod(&mut f, &dir, &m);
+        let json = std::fs::read_to_string(dir.join("ks_sidecar_test.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+        made.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json.unwrap()).unwrap();
+        assert_eq!(v["cars"][0]["aceconv_fixes"], crate::fixes());
+        assert_eq!(v["cars"][0]["aceconv_source"], "x");
     }
 }
