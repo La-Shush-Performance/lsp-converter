@@ -131,7 +131,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     let coast = coast_curve(c, &ei, limiter);
     let coast = match idle_hold(&coast, idle, limiter) {
         Some(h) => {
-            c.note(format!("physics: coast {:+.0} N m at 0 rpm, crossing 0 at {:.0} (idle {idle:.0}): the stock idle hold (AC1's curve brakes from 0 rpm)", h[0].1, h[1].0));
+            c.note(format!("physics: coast {:+.0} N m at 0 rpm, crossing 0 at {:.0} (idle {idle:.0}): the stock idle hold (AC1's curve brakes at idle)", h[0].1, h[2].0));
             h
         }
         None => coast,
@@ -199,37 +199,44 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
-/// Stock coast curves cross 0 above idle: the zero crossing over idle, p10 1.21,
-/// median 1.6, lowest 1.17 on ks_mazda_mx5_na (AC1's ks_mazda_miata twin) over
-/// the 34 stock combustion cars with a coast curve and an idle. Ours sits near
-/// the twin, so the engine settles close to AC1's idle.
-const IDLE_HOLD_ZERO_OVER_IDLE: f64 = 1.2;
-/// ... and their positive part peaks at this share of the coast torque at the
-/// limiter (median 0.26, p10 0.17, same 34 cars).
-const IDLE_HOLD_PEAK_OF_LIMITER_COAST: f64 = 0.26;
+/// Stock coast curves cross 0 well above idle: the zero crossing over idle,
+/// median 1.57, p25 1.33, p10 1.21, over the 74 stock combustion engines with
+/// a coast curve and an idle (content.kspkg, 7 Nov 2026). Ours sits a hair under
+/// the median, so the engine has room to settle above AC1's idle.
+const IDLE_HOLD_ZERO_OVER_IDLE: f64 = 1.5;
+/// ... and at idle they push this share of the coast torque at the limiter
+/// (median 0.25, p25 0.17, p10 0.07; 24 of the 74 are flat from 0 rpm to idle).
+const IDLE_HOLD_AT_IDLE_OF_LIMITER_COAST: f64 = 0.25;
+/// A mod's curve that pushes at least the stock p10 at idle holds by itself.
+const IDLE_HOLD_ENOUGH_OF_LIMITER_COAST: f64 = 0.07;
 
 fn lerp(pts: &[(f64, f64)], x: f64) -> f64 {
     pbx::lerp_lut(pts, x)
 }
 
-/// OURS: the stock idle hold. Every stock coast curve is positive from 0 rpm up
-/// to a little over idle (the 240Z: +3.6 N m at 0, crossing 0 at 1250 on a 600
-/// idle), so an engine off the throttle holds itself up at idle. AC1 needs none
-/// (its engine never drops below MINIMUM) and AC1's coast brakes from 0 rpm, so
-/// a converted engine fell away after starting and bogged pulling away unless
-/// the clutch was slipped hard (the La Shush Momentum Ice: -21 N m at its 1900
-/// idle). An AC1 curve that does not brake at idle is the mod's own and stays.
-/// The hold: `peak` at 0 rpm, 0 at 1.2 x idle, back on AC1's curve at twice
-/// that.
+/// OURS: the stock idle hold. Every stock coast curve pushes from 0 rpm up to
+/// well over idle (the Abarth 695: +20 N m at 0, +28 at its 850 idle, crossing
+/// 0 at 1250), so an engine off the throttle holds itself up at idle against
+/// the drivetrain's drag. AC1 needs none (its engine never drops below MINIMUM)
+/// and AC1's coast brakes from 0 rpm, so a converted engine fell away after
+/// starting and shut off unless the throttle was held. A first hold (a ramp
+/// from 0 rpm to 0 at 1.2 x idle) left the La Shush Street 4 N m at its 900
+/// idle, the stock bottom 3 %, and it still shut off (7 Nov 2026). The hold
+/// now has the stock shape: flat at 0.25 x the limiter's coast torque from 0
+/// rpm to idle, 0 at 1.5 x idle, back on AC1's curve at twice that. A mod's
+/// curve that already pushes the stock p10 at idle stays.
 fn idle_hold(coast: &[(f64, f64)], idle: f64, limiter: f64) -> Option<Vec<(f64, f64)>> {
-    if coast.len() < 2 || idle <= 0.0 || lerp(coast, idle) > 0.0 {
+    if coast.len() < 2 || idle <= 0.0 {
         return None;
     }
-    let at_lim = lerp(coast, limiter).min(lerp(coast, limiter * 0.95));
-    let peak = (IDLE_HOLD_PEAK_OF_LIMITER_COAST * -at_lim).max(3.0);
+    let at_lim = lerp(coast, limiter).min(lerp(coast, limiter * 0.95)).min(0.0);
+    if lerp(coast, idle) >= IDLE_HOLD_ENOUGH_OF_LIMITER_COAST * -at_lim && lerp(coast, idle) > 0.0 {
+        return None;
+    }
+    let hold = (IDLE_HOLD_AT_IDLE_OF_LIMITER_COAST * -at_lim).max(5.0);
     let z = idle * IDLE_HOLD_ZERO_OVER_IDLE;
     let z2 = 2.0 * z;
-    let mut out = vec![(0.0, peak), (z, 0.0), (z2, lerp(coast, z2).min(0.0))];
+    let mut out = vec![(0.0, hold), (idle, hold), (z, 0.0), (z2, lerp(coast, z2).min(0.0))];
     out.extend(coast.iter().copied().filter(|p| p.0 > z2));
     Some(out)
 }
@@ -243,14 +250,17 @@ mod idle_hold_tests {
         // the Momentum Ice: AC1 COAST_REF 100 N m at 9000, linear from 0; idle 1900, limiter 8798
         let ac1: Vec<(f64, f64)> = (0..=12).map(|k| { let r = 10557.6 * k as f64 / 12.0; (r, -100.0 * r / 9000.0) }).collect();
         let h = idle_hold(&ac1, 1900.0, 8798.0).unwrap();
-        // positive at 0 and at idle, 0 at 1.2 x idle, AC1's own from twice that
-        assert!((h[0].1 - 0.26 * 100.0 * 8798.0 / 9000.0).abs() < 0.5);
-        assert_eq!(h[1], (2280.0, 0.0));
-        assert!(super::lerp(&h, 1900.0) > 0.0);
+        // flat at 0.25 x the limiter's coast to idle, 0 at 1.5 x idle, AC1's own from twice that
+        let at_lim = 100.0 * 8798.0 / 9000.0;
+        assert!((h[0].1 - 0.25 * at_lim).abs() < 0.5);
+        assert!((super::lerp(&h, 1900.0) - 0.25 * at_lim).abs() < 0.5);
+        assert_eq!(h[2], (2850.0, 0.0));
         assert!((super::lerp(&h, 6000.0) - -100.0 * 6000.0 / 9000.0).abs() < 0.01);
         assert!(h.windows(2).all(|w| w[1].0 > w[0].0 && w[1].1 <= w[0].1));
         // a mod's curve that already holds at idle stays
         assert!(idle_hold(&[(0.0, 20.0), (1200.0, 0.0), (8000.0, -60.0)], 800.0, 8000.0).is_none());
+        // ... but one that barely holds (the first hold's 4 N m at idle) is lifted
+        assert!(idle_hold(&[(0.0, 24.0), (1080.0, 0.0), (9000.0, -92.0)], 900.0, 9000.0).is_some());
     }
 }
 
