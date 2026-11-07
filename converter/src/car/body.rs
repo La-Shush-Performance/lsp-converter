@@ -243,6 +243,10 @@ fn facing(i: &Inst, f: &Frame) -> [f64; 3] {
     n
 }
 
+/// How far a window print sits out from its glass (bannergap: stock
+/// EXT_BANNER over EXT_WINDOWS).
+const BANNER_LIFT: f32 = 0.0015;
+
 /// The stock glass batch names (validate::batches GLASS_SHADERS).
 const GLASS_NAMES: [&str; 4] = ["EXT_WINDOWS", "INT_WINDOWS", "INT_WINDSHIELD", "INT_GLASS"];
 
@@ -254,6 +258,7 @@ fn sec_name(kind: Kind, interior: bool, mat: &str, used: &mut HashMap<String, us
         // INT_WINDSHIELD / INT_WINDOWS (named by `plan`), INT_GLASS over the gauges
         Kind::Glass => if interior { "INT_WINDOWS".to_string() } else { "EXT_WINDOWS".to_string() },
         Kind::GaugeGlass => "INT_GLASS".to_string(),
+        Kind::Banner => format!("{side}_BANNER"),
         Kind::LampGlass => "EXT_LIGHTS_GLASS".to_string(),
         Kind::Lamp => "EXT_LIGHTS".to_string(),
         Kind::Disc => "EXT_DISC".to_string(),
@@ -483,6 +488,22 @@ pub fn plan(k: &Kn5, insts: &[Inst], f: &Frame, h: &Hints, donor_ext_bones: &[Bo
                 sections[si].clip.insert(ii, clip);
             }
         }
+    }
+    // a print on the outside glass (sun strip, logo): the same meshes again
+    // as EXT_BANNER, one per AC1 material, which `write` keeps only when
+    // the window texture really carries one (stock banners are their own
+    // cut-out batch over the glass)
+    let printable: Vec<(usize, usize, String)> = sections.iter().filter(|s| s.kind == Kind::Glass && !s.interior)
+        .flat_map(|s| s.parts.iter().map(|(ii, b)| (insts[*ii].material, *ii, b.clone())))
+        .filter(|(mat, _, _)| k.materials.get(*mat).is_some_and(|m| m.blend_mode == 1 && m.texture("txDiffuse").is_some_and(|t| !t.is_empty())))
+        .collect();
+    for (mat, ii, b) in printable {
+        let key = (Kind::Banner, mat, false, String::new());
+        let si = *by_key.entry(key).or_insert_with(|| {
+            sections.push(Sec { name: sec_name(Kind::Banner, false, "", &mut used), kind: Kind::Banner, material: mat, interior: false, parts: Vec::new(), clip: HashMap::new() });
+            sections.len() - 1
+        });
+        sections[si].parts.push((ii, b));
     }
     // stock cars carry the windows twice: EXT_WINDOWS outside and the cockpit's
     // INT_WINDSHIELD / INT_WINDOWS. An AC1 car without cockpit-side glass gets
@@ -785,6 +806,21 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], f
             continue;
         }
         let (name, mut geo) = (s.name.clone(), geo);
+        if s.kind == Kind::Banner {
+            // only a window whose texture carries a print
+            let diffuse = m.texture("txDiffuse").unwrap_or("");
+            let printed = tex.image(diffuse, default_skin.as_ref().map(|(_, p)| p.as_path())).is_some_and(|(img, _, _)| materials::window_print(&img));
+            if !printed {
+                continue;
+            }
+            notes.push(format!("geometry: {} prints on its glass - {name} (cut-out over EXT_WINDOWS)", m.name));
+            // out along the normal: drawn over the glass, never through it
+            for v in geo.verts.iter_mut() {
+                for c in 0..3 {
+                    v.pos[c] += v.nrm[c] * BANNER_LIFT;
+                }
+            }
+        }
         fix_uvs(&name, &mut geo);
         let mat_path = if matches!(s.kind, Kind::Mirror | Kind::GaugeGlass) {
             let stock = format!("content\\cars\\common_assets\\materials\\{name}.material");

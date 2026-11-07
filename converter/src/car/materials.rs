@@ -60,6 +60,33 @@ pub enum Kind {
     LampGlass,
     /// gauge / instrument glass inside the cockpit: stock INT_GLASS
     GaugeGlass,
+    /// the print on an AC1 window (sun strip, logo): the window texture's
+    /// opaque texels as a cut-out over the glass, stock EXT_BANNER
+    Banner,
+}
+
+/// Window texels at or above this alpha are print, not glass (AC1 glass
+/// alpha is its coverage: 0.2..0.5 on clear and tinted windows, 1 where a
+/// sun strip or logo is painted on).
+pub const PRINT_ALPHA: f32 = 0.75;
+
+/// Whether an AC1 window texture carries a print: some texels opaque
+/// (alpha >= PRINT_ALPHA) among see-through ones. La Shush Momentum Ice's
+/// window.dds is glass of alpha 70/255 with a black banner and the
+/// La Shush logo at 255; EXT_WINDOWS (one flat tint) dropped them.
+/// Under 0.2% opaque is edge noise; over 60% is not glass with a print.
+pub fn window_print(img: &Image) -> bool {
+    let cut = (PRINT_ALPHA * 255.0) as u8;
+    let step = ((img.w * img.h) as usize / 262144).max(1);
+    let (mut opaque, mut n) = (0usize, 0usize);
+    for p in img.px.chunks_exact(4).step_by(step) {
+        n += 1;
+        if p[3] >= cut {
+            opaque += 1;
+        }
+    }
+    let f = opaque as f64 / n.max(1) as f64;
+    (0.002..0.6).contains(&f)
 }
 
 /// The stock batch slots of a rim / rim-blur mesh. The game's car renderer
@@ -500,6 +527,16 @@ pub enum Role {
     /// roughness baked from a multimap: exponent and specular x 1000
     Rough(u32, u32),
     Alpha,
+    /// the diffuse alpha cut at a threshold (x 1000) into a hard 0 / 1 map:
+    /// stock cut-out opacity maps are 0 / 1, and the game draws an opacity
+    /// between as a screen-door dither (a window print over glass of alpha
+    /// 0.3 came out stippled and grey)
+    Cut(u32),
+    /// a window print's colours, opaque (alpha 1): stock banner colour maps
+    /// carry no alpha, and the cut-out shader reads the colour map's alpha
+    /// (the window's glass coverage, 0.27 on the Momentum Ice) into its
+    /// opacity, drawn as a screen-door dither. BC7 for the print's edges
+    Print,
     /// a grey mask: the brightest channel, scaled so the mask peaks at 1
     /// (AC1's coloured brake-glow map -> the stock white glow mask)
     Mask,
@@ -887,6 +924,14 @@ impl<'a> Tex<'a> {
                 self.put(files, &p, &img, fmt, true, &src);
                 Some(p)
             }
+            Role::Print => {
+                let img = texture::resize_to(&img, self.cap(true, skin.map(|s| s.0)), true);
+                let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
+                let a = Image { w: img.w, h: img.h, px };
+                let p = self.unique_path(&dir, &format!("{stem}_print"));
+                self.put(files, &p, &a, Fmt::Bc7, true, &src);
+                Some(p)
+            }
             Role::Normal => {
                 if is_flat_normal(&img) {
                     None
@@ -902,6 +947,15 @@ impl<'a> Tex<'a> {
                 let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| [c[3], c[3], c[3], 255]).collect();
                 let a = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_at"));
+                self.put(files, &p, &a, Fmt::Bc4, false, &src);
+                Some(p)
+            }
+            Role::Cut(t) => {
+                let img = texture::resize_to(&img, self.cap(false, skin.map(|s| s.0)), false);
+                let cut = (t as f32 / 1000.0 * 255.0).round() as u8;
+                let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| { let v = if c[3] >= cut { 255 } else { 0 }; [v, v, v, 255] }).collect();
+                let a = Image { w: img.w, h: img.h, px };
+                let p = self.unique_path(&dir, &format!("{stem}_cut"));
                 self.put(files, &p, &a, Fmt::Bc4, false, &src);
                 Some(p)
             }
@@ -1245,13 +1299,16 @@ fn setp(m: &mut Msg, name: &str, v: &[f32]) {
 /// blendMode 2 (cut-out) with f2 1 on 545 of 546 materials, blendMode 1
 /// (blended) with f2 2 on 639 of 640, opaque with no f2. A cut-out also
 /// carries f9 2 and its alpha threshold in f10 (0.2 on most stock decals,
-/// 0.1 to 0.3 on the rest).
+/// 0.1 to 0.3 on the rest). f9 is a float on every stock material (527
+/// cut-outs at 2.0, none as an integer); written as an integer the game
+/// skipped it and drew the cut-out half see-through as a screen-door
+/// dither (La Shush Momentum Ice's windscreen banner)
 fn set_blend(m: &mut Msg, mode: u8, cutoff: f32) {
     setp(m, "blendMode", &[mode as f32]);
     match mode {
         2 => {
             m.set_varint(2, 1);
-            m.set_varint(9, 2);
+            m.set_f32(9, 2.0);
             m.set_f32(10, cutoff);
         }
         1 => m.set_varint(2, 2),
@@ -1478,6 +1535,13 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
             base = if unlit { [0.02, 0.02, 0.02, 1.0] } else { [0.18, 0.18, 0.18, 1.0] };
         }
     }
+    // a window print: its colours with no alpha (Role::Print)
+    if inp.kind == Kind::Banner {
+        if let Some(p) = tex.get(files, diffuse, Role::Print, skin) {
+            set_slot(&mut s, "Base_BaseColorMap", &p);
+            setp(&mut s, "Base_HasBaseColorMap", &[1.0]);
+        }
+    }
     // alpha cut-outs (decals, grilles), whatever the colour: a black texture
     // that is wholly transparent hides its mesh (La Shush Street's
     // OLD_MAN_LEMON_YELLOW bonnet stripes, alpha 0 under ksAlphaRef 0.5 in
@@ -1489,7 +1553,8 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
     // away (light and vent edges, badges) showed as rainbow noise
     if let Some(img) = &img {
         if (!multimap || m.alpha_tested) && (m.alpha_tested || m.blend_mode == 1) && mean(img)[3] < 0.98 {
-            if let Some(ap) = tex.get(files, diffuse, Role::Alpha, skin) {
+            let role = if inp.kind == Kind::Banner { Role::Cut((PRINT_ALPHA * 1000.0) as u32) } else { Role::Alpha };
+            if let Some(ap) = tex.get(files, diffuse, role, skin) {
                 set_slot(&mut s, "Base_OpacityMap", &ap);
                 setp(&mut s, "Base_HasOpacityMap", &[1.0]);
                 base[3] = 0.0;
@@ -1497,7 +1562,9 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
                 // when higher; rim slots keep their stock template's state
                 // (decals cut by f9 / f10 alone, the blur disc blended)
                 if rim.is_none() {
-                    let cut = if m.alpha_tested { prop(m, "ksAlphaRef").unwrap_or(0.0).max(0.2) } else { 0.2 };
+                    // a window print: its hard map (Role::Cut) already keeps
+                    // only the opaque texels, cut halfway between its 0 and 1
+                    let cut = if inp.kind == Kind::Banner { 0.5 } else if m.alpha_tested { prop(m, "ksAlphaRef").unwrap_or(0.0).max(0.2) } else { 0.2 };
                     set_blend(&mut s, 2, cut);
                 }
             }
@@ -1703,7 +1770,7 @@ mod tests {
         set_prop(&mut m, "blendMode", &[0.0]);
         set_blend(&mut m, 2, 0.5);
         let m2 = Msg::parse(&m.encode()).unwrap();
-        assert_eq!((m2.varint(2), m2.varint(9), m2.f32(10)), (Some(1), Some(2), Some(0.5)));
+        assert_eq!((m2.varint(2), m2.f32(9), m2.f32(10)), (Some(1), Some(2.0), Some(0.5)));
         assert_eq!(crate::io::material::get_prop(&m2, "blendMode", 1).unwrap(), vec![2.0]);
         set_blend(&mut m, 1, 0.0);
         assert_eq!(m.varint(2), Some(2));
