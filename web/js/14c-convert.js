@@ -49,8 +49,12 @@ async function cvDropImport(files) {
   }
 }
 
+/* The Windows folder picker. ⚠ apiLong: api()'s 12 s limit gave up while
+   the person was still browsing, and the folder they picked was lost. */
+const cvPickFolder = (start, title) => apiLong('pick_folder', { start: start || '', title: title || '' }, 30 * 60 * 1000);
+
 async function cvAddFolder(st) {
-  const r = await api('pick_folder', { start: (st.extra_dirs || '').split(';').pop() || '' });
+  const r = await cvPickFolder((st.extra_dirs || '').split(';').pop());
   if (!r.ok) { toast(r.error || 'Could not open the folder picker', true); return; }
   if (!r.path) return;
   const have = (st.extra_dirs || '').split(';').map(x => x.trim()).filter(Boolean);
@@ -301,6 +305,20 @@ async function convertPage() {
     i.spellcheck = false;
     i.title = hint;
     inputs[k] = i;
+    if (k === 'ac1_root') {
+      // a Browse button: typing a long path by hand was the only way in
+      const wrap = el('div', 'row cv-browse');
+      const b = el('button', 'sm', 'Browse');
+      b.onclick = async () => {
+        const r = await cvPickFolder(i.value, 'Pick the Assetto Corsa folder (the one with acs.exe and content)');
+        if (!r.ok || !r.path) return;
+        i.value = r.path;
+        save.click();
+      };
+      wrap.append(i, b);
+      sg.append(el('div', 'tiny', esc(label)), wrap, tick(ok));
+      continue;
+    }
     sg.append(el('div', 'tiny', esc(label)), i, tick(ok));
   }
   const row3 = (label, text, ok) => {

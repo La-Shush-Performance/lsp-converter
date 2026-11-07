@@ -71,7 +71,22 @@ pub fn converter() -> Option<PathBuf> {
 /// The converter's source revision (converter/UPSTREAM_REV at build time).
 pub const CONVERTER_REV: &str = env!("ACECM_CONVERTER_REV");
 
+/// Assetto Corsa's Steam app id.
+const APPID_AC1: &str = "244210";
+
+/// Where Assetto Corsa is: Steam's own records first (any library, any
+/// drive), then the usual places.
 fn default_ac1_root() -> String {
+    let d = crate::detect::steam_app_dir(APPID_AC1);
+    if !d.is_empty() {
+        return d;
+    }
+    for lib in crate::detect::steam_libraries() {
+        let p = Path::new(&lib).join("steamapps").join("common").join("assettocorsa");
+        if p.is_dir() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
     let c = [
         PathBuf::from(r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa"),
         PathBuf::from(r"D:\SteamLibrary\steamapps\common\assettocorsa"),
@@ -464,12 +479,42 @@ pub fn info() -> Value {
     })
 }
 
+/// The Assetto Corsa folder for a path someone picked or typed: the install
+/// itself, or (picked one level too deep) its content, content\cars or
+/// content\tracks folder, or the acs.exe in it.
+fn ac1_root_of(v: &str) -> String {
+    if v.is_empty() {
+        return String::new();
+    }
+    let mut p = PathBuf::from(v);
+    if p.is_file() {
+        if let Some(d) = p.parent() {
+            p = d.to_path_buf();
+        }
+    }
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if matches!(name(&p).as_str(), "cars" | "tracks") && name(p.parent().unwrap_or(&p)) == "content" {
+        p = p.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or(p);
+    } else if name(&p) == "content" && (p.join("cars").is_dir() || p.join("tracks").is_dir()) {
+        p = p.parent().map(Path::to_path_buf).unwrap_or(p);
+    }
+    p.to_string_lossy().into_owned()
+}
+
 /// POST /api/convert/settings {ac1_root, out_dir, threads, memory_gb}
 pub fn save_settings(body: &Value) -> Value {
     let mut cur = match config::load().get("convert") { Some(Value::Object(m)) => m.clone(), _ => Map::new() };
     for k in ["ac1_root", "out_dir", "extra_dirs"] {
         if let Some(v) = body.get(k).and_then(|v| v.as_str()) {
-            cur.insert(k.into(), json!(v.trim()));
+            // ⚠ Explorer's "Copy as path" pastes with quotes
+            let v = if k == "extra_dirs" {
+                v.split(';').map(|x| x.trim().trim_matches('"').trim()).filter(|x| !x.is_empty())
+                    .collect::<Vec<_>>().join(";")
+            } else {
+                v.trim().trim_matches('"').trim().to_string()
+            };
+            let v = if k == "ac1_root" { ac1_root_of(&v) } else { v };
+            cur.insert(k.into(), json!(v));
         }
     }
     for k in ["threads", "memory_gb"] {
@@ -911,14 +956,15 @@ pub(crate) fn from_extra(kind: &str, p: &Path) -> bool {
 }
 
 /// POST /api/pick_folder: the Windows folder picker, on THIS machine.
-pub fn pick_folder(start: &str) -> Value {
+pub fn pick_folder(start: &str, title: &str) -> Value {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        let title = if title.trim().is_empty() { "Pick a folder with Assetto Corsa mods (or one car / track)" } else { title.trim() };
         let script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
             Add-Type -AssemblyName System.Windows.Forms; \
             $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
-            $d.Description = 'Pick a folder with Assetto Corsa mods (or one car / track)'; \
+            $d.Description = $env:ACECM_TITLE; \
             $d.ShowNewFolderButton = $false; \
             if ($env:ACECM_START -and (Test-Path -LiteralPath $env:ACECM_START)) { $d.SelectedPath = $env:ACECM_START }; \
             $f = New-Object System.Windows.Forms.Form -Property @{TopMost = $true}; \
@@ -926,6 +972,7 @@ pub fn pick_folder(start: &str) -> Value {
         let out = std::process::Command::new("powershell")
             .args(["-NoProfile", "-STA", "-Command", script])
             .env("ACECM_START", start)
+            .env("ACECM_TITLE", title)
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .output();
         match out {
@@ -938,7 +985,7 @@ pub fn pick_folder(start: &str) -> Value {
     }
     #[cfg(not(windows))]
     {
-        let _ = start;
+        let _ = (start, title);
         json!({"ok": false, "error": "type the folder path instead"})
     }
 }

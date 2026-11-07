@@ -197,7 +197,8 @@ pub async fn handle(peer: IpAddr, req: Request) -> Response {
         (true, "/api/pick_folder") if !auth::is_loopback(&peer) => json_resp(403, &json!({"ok": false, "error": "only on the PC running LSP Converter"})),
         (true, "/api/pick_folder") => {
             let start = bs("start");
-            json_resp(200, &blocking(move || crate::convert::pick_folder(&start)).await)
+            let title = bs("title");
+            json_resp(200, &blocking(move || crate::convert::pick_folder(&start, &title)).await)
         }
         // a link clicked in the window opens in the browser or mail app
         // (procs.rs): on THIS machine only, and only https or mailto
