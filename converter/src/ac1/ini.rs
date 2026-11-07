@@ -30,13 +30,51 @@ fn strip_comment(l: &str) -> &str {
     &l[..end]
 }
 
+/// Section names of AC1's car data files (Kunos cars), and their numbered
+/// families (`TURBO_0`, `WING_2`, `LIGHT_5`, ...).
+fn ac1_section(name: &str) -> bool {
+    const NAMES: &[&str] = &["HEADER", "INFO", "BASIC", "GRAPHICS", "CONTROLS", "FUEL", "FUEL_EXT", "PIT_STOP", "RIDE", "RULES",
+        "ENGINE_DATA", "COAST_REF", "COAST_DATA", "COAST_CURVE", "DAMAGE", "TRACTION", "GEARS", "GEARBOX", "CLUTCH", "DIFFERENTIAL",
+        "AUTOCLUTCH", "AUTOBLIP", "AUTO_SHIFTER", "DOWNSHIFT_PROFILE", "UPSHIFT_PROFILE", "AWD", "AWD2", "FRONT", "REAR", "ARB",
+        "GRAPHICS_OFFSETS", "FRONT_BRAKE", "REAR_BRAKE", "DATA", "DISCS_GRAPHICS", "COMPOUND_DEFAULT", "THERMAL_FRONT", "THERMAL_REAR"];
+    let n = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    NAMES.contains(&name)
+        || (n.len() < name.len() && n.ends_with('_') && ["TURBO_", "WING_", "LIGHT_", "GEAR_", "FRONT_", "REAR_", "THERMAL_FRONT_", "THERMAL_REAR_", "DYNAMIC_CONTROLLER_"].contains(&n))
+}
+
 pub fn parse(text: &str) -> Ini {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut ini = Ini::default();
     let mut cur = String::new();
     for raw in text.lines() {
-        let l = strip_comment(raw).trim();
+        let mut l = strip_comment(raw).trim();
         if l.is_empty() {
+            continue;
+        }
+        // a header at the end of a key line starts that section, as AC1 reads it: the
+        // HillClimb Ferrari 488 GTE's car.ini has `SHORT_NAME=488 GTE [BASIC]`, and its
+        // GRAPHICS_OFFSET (0.405 m down), TOTALMASS and INERTIA under it were lost to [INFO]
+        // (the model 19.5 cm out, 1200 kg instead of 1330). Only AC1's own section names
+        // count, so a name like `Ferrari 488 [GT3]` stays a value.
+        let mut next: Option<String> = None;
+        if !l.starts_with('[') && l.ends_with(']') {
+            if let Some(p) = l.rfind('[') {
+                let name = l[p + 1..l.len() - 1].trim();
+                if l[..p].contains('=') && ac1_section(name) {
+                    next = Some(name.to_string());
+                    l = l[..p].trim();
+                }
+            }
+        }
+        if let Some(n) = next {
+            if let Some((k, v)) = l.split_once('=') {
+                let k = k.trim().to_uppercase();
+                if !k.is_empty() {
+                    ini.sections.entry(cur.clone()).or_default().insert(k, v.trim().to_string());
+                }
+            }
+            cur = n;
+            ini.sections.entry(cur.clone()).or_default();
             continue;
         }
         if let Some(rest) = l.strip_prefix('[') {
@@ -174,6 +212,24 @@ mod tests {
         assert_eq!(g.num("GEARS", "GEAR_5"), Some(0.759));
         assert_eq!(g.get("GEARS", "GEAR_6"), None);
         assert_eq!(g.get("X", "C"), Some("(|0=1|1=0|)"));
+    }
+
+    #[test]
+    fn header_at_line_end() {
+        // the HillClimb 488 GTE's car.ini
+        let i = parse("[INFO]\nSCREEN_NAME=Ferrari 488 GTE\n\n \nSHORT_NAME=488 GTE [BASIC]\nGRAPHICS_OFFSET=0.0,-0.405,-0.195\t; x\nTOTALMASS=1330\n[GRAPHICS]\nX=1\n");
+        assert_eq!(i.get("INFO", "SHORT_NAME"), Some("488 GTE"));
+        assert_eq!(i.nums("BASIC", "GRAPHICS_OFFSET"), vec![0.0, -0.405, -0.195]);
+        assert_eq!(i.num("BASIC", "TOTALMASS"), Some(1330.0));
+        assert_eq!(i.get("INFO", "TOTALMASS"), None);
+        assert_eq!(i.num("GRAPHICS", "X"), Some(1.0));
+        // a name in brackets is a value, not a section
+        let n = parse("[INFO]\nSCREEN_NAME=Ferrari 488 [GT3]\nSHORT_NAME=488\n");
+        assert_eq!(n.get("INFO", "SCREEN_NAME"), Some("Ferrari 488 [GT3]"));
+        assert_eq!(n.get("INFO", "SHORT_NAME"), Some("488"));
+        // numbered families
+        let t = parse("[ENGINE_DATA]\nLIMITER=8000 [TURBO_0]\nMAX_BOOST=1\n");
+        assert_eq!(t.num("TURBO_0", "MAX_BOOST"), Some(1.0));
     }
 
     #[test]

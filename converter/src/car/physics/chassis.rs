@@ -231,6 +231,8 @@ pub fn brakes_steering(c: &mut Ctx) -> Result<()> {
     };
     c.d.steer_lock = lock;
     c.d.steer_ratio = ratio;
+    // the stock range holds: the La Shush Old Man's FFMULT 10 was drive-tested at 5.5, 7, 8.5 and
+    // 10 (7 Nov 2026) and kept at the stock top
     let ff = clamp_note(c, "FFMULT", ci.num("CONTROLS", "FFMULT").unwrap_or(2.0), FF_MULT);
     let k = at(&mut c.cd, &[8])?;
     f(k, 1, ff);
