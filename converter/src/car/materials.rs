@@ -387,14 +387,35 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 
 pub fn metalness(m: &Material) -> f32 {
     let f0 = prop(m, "fresnelC").unwrap_or(0.04);
-    let mut v = smooth(0.15, 0.5, f0);
+    smooth(0.15, 0.5, f0).max(name_metal(m))
+}
+
+/// The metalness a material's name says (chrome 0.95, metal 0.6), else 0.
+fn name_metal(m: &Material) -> f32 {
     let both = m.name.to_lowercase();
     if re(r"(chrome|cromo|polish|mirror)").is_match(&both) {
-        v = v.max(0.95);
+        0.95
     } else if re(r"(metal|alu|steel|iron|exhaust|titan)").is_match(&both) {
-        v = v.max(0.6);
+        0.6
+    } else {
+        0.0
     }
-    v
+}
+
+/// One texel of a reflective metal (`Tex::metal_bake`): AC1 reflects the
+/// material's reflectance x maps blue there. Returns (metalness, roughness,
+/// colour scale): metalness by `metalness`'s ramp on that texel's
+/// reflectance (the material's: fresnelC, or what its name says, x blue);
+/// roughness from the highlight (maps R scales the specular, G the exponent,
+/// as `Role::Rough`) where it does not reflect, down to `cap` where it does;
+/// AC1's dimming (`dim`) only where it is not metal. The Old Man's silencer
+/// (blue about 0.55) is chrome, its side panels (0) dark: a name's metalness
+/// scaled linearly by blue left the silencer half metal and satin.
+#[allow(clippy::too_many_arguments)]
+pub fn metal_texel(f0: f32, named: f32, exp: f32, spec: f32, dim: f32, cap: f32, r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let mt = smooth(0.15, 0.5, f0.max(named) * b);
+    let hl = roughness((exp * g).max(1.0), spec * r).clamp(0.15, 0.85);
+    (mt, hl + (hl.min(cap) - hl) * mt, dim + (1.0 - dim) * mt)
 }
 
 /// Whether AC1 lays the detail map under the diffuse: the multimap /
@@ -409,19 +430,65 @@ pub struct Pbr {
     pub rough: f32,
     pub metal: f32,
     pub tint: f32,
+    /// AC1's dimming of the colour (`tint` before a reflective metal undid
+    /// it): what a reflective metal's dull texels still get
+    pub dim: f32,
 }
 
 pub fn pbr(m: &Material, kind: Kind) -> Pbr {
     let exp = prop(m, "ksSpecularEXP").unwrap_or(20.0);
     let spec = prop(m, "ksSpecular").unwrap_or(0.3);
     let lum = prop(m, "ksDiffuse").unwrap_or(0.4) + prop(m, "ksAmbient").unwrap_or(0.3);
-    let tint = (lum / 0.6).clamp(0.15, 1.0);
+    let mut tint = (lum / 0.6).clamp(0.15, 1.0);
     let (lo, hi) = match kind {
         Kind::Paint => (0.2, 0.55),
         Kind::Disc => (0.3, 0.7),
         _ => (0.15, 0.85),
     };
-    Pbr { rough: roughness(exp, spec).clamp(lo, hi), metal: metalness(m), tint }
+    let metal = metalness(m);
+    let mut rough = roughness(exp, spec).clamp(lo, hi);
+    let dim = tint;
+    if let Some(cap) = reflective_metal(m, metal).filter(|_| kind == Kind::Generic) {
+        rough = rough.min(cap);
+        tint = 1.0;
+    }
+    Pbr { rough, metal, tint, dim }
+}
+
+/// Stock chrome's roughness: EXT_MECH_CHROME over the stock cars, its paint
+/// layer included (26 materials: p10 0.10, median 0.20, p90 0.25).
+const CHROME_ROUGH: f32 = 0.20;
+/// No stock metal part is rougher: EXT_MECH_EXHAUST (47: median 0.35) and
+/// EXT_MECH_METAL (30: median 0.40) both reach 0.45 at p90.
+const METAL_ROUGH_MAX: f32 = 0.45;
+
+/// OURS: a metal AC1 shows by its reflection. AC1 keeps the sun highlight
+/// (ksSpecular / ksSpecularEXP) and the environment reflection (fresnelC,
+/// fresnelMaxLevel) apart, and a chrome part is often a weak, broad highlight
+/// on a full reflection with little diffuse; EVO's one roughness drives both.
+/// Read from the highlight alone, the La Shush Old Man's ext_chrome exhaust
+/// (fresnelC 0.5, fresnelMaxLevel 1, ksSpecular 0.1 at 15, ksDiffuse 0.15)
+/// came out at roughness 0.75 and a quarter of its colour: dull dark metal,
+/// where AC1 shows it polished. A metal with a strong reflection takes stock
+/// chrome's roughness (fresnelMaxLevel 0.8 and up) or at most stock metal's,
+/// no highlight roughness map (stock metal parts carry none: 1 of 103) and its
+/// colour undimmed (AC1's low diffuse is what makes it a mirror). With a maps
+/// texture AC1 reflects only where its blue says, so that goes texel by texel
+/// (`Tex::metal_bake`): the same ext_chrome is the Old Man's side panels too,
+/// which a whole-material mirror turned to chrome. The roughness cap, or None
+/// for anything else.
+pub fn reflective_metal(m: &Material, metal: f32) -> Option<f32> {
+    if metal < 0.5 {
+        return None;
+    }
+    let refl = prop(m, "fresnelMaxLevel").unwrap_or(0.0);
+    if refl >= 0.8 {
+        Some(CHROME_ROUGH)
+    } else if refl >= 0.3 {
+        Some(METAL_ROUGH_MAX)
+    } else {
+        None
+    }
 }
 
 // ------------------------------------------------------------ textures --
@@ -436,8 +503,8 @@ pub enum Role {
     /// a grey mask: the brightest channel, scaled so the mask peaks at 1
     /// (AC1's coloured brake-glow map -> the stock white glow mask)
     Mask,
-    /// an AC1 tiled detail map as a layer colour map (true: paint, with the
-    /// detail's share of the paint tone curve)
+    /// an AC1 tiled detail map as a layer colour map (true: on paint; kept
+    /// apart in the cache, the map itself is the same)
     Detail(bool),
     /// the detail layer's splat weight from the diffuse alpha (1 - a)
     Splat,
@@ -487,6 +554,8 @@ pub struct Tex<'a> {
     /// content\cars\<id>
     pub base: String,
     done: HashMap<(u64, Role), Option<String>>,
+    /// reflective metals' (colour, metalness, roughness) bakes
+    metal_done: HashMap<u64, Option<(String, String, String)>>,
     used_names: HashSet<String>,
     /// mean linear colour of baked albedo textures, by path
     means: HashMap<String, [f32; 3]>,
@@ -561,16 +630,14 @@ pub fn lin_srgb(l: f32) -> f32 {
     if l <= 0.0031308 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }
 }
 
-/// AC1 paint albedo (linear) -> EVO paint albedo (ours): 0.85 x v^0.75,
-/// calibrated on the ks_mazda_miata / ks_mazda_mx5_na pair: the six AC1
-/// skin colours (classic red, mariner blue, crystal white, brilliant black,
-/// sunburst yellow, marina green; diffuse x detail, linear) against the stock
-/// EVO colours of the same names (mazda_paint_*.oemmultilayercolor): bright
-/// colours land within about 15 %, dark ones are lifted the way Kunos
-/// lifted them (black 0.002 -> 0.008, stock 0.013).
-pub fn paint_tone(v: f32) -> f32 {
-    0.85 * v.max(0.0).powf(0.75)
-}
+// OURS: paint keeps AC1's albedo. A tone curve (0.85 x v^0.75, fitted on the
+// ks_mazda_miata / ks_mazda_mx5_na colours, where Kunos lifted black 0.002 ->
+// 0.013) lifted every dark colour while bright ones stayed: the La Shush Old
+// Man's black side panels baked 3x brighter (sRGB 8 -> 25) and converted cars
+// read greyer than in AC1. Drive-tested against AC1's own colours on 7 Nov
+// 2026: AC1's colours matched AC1. A full clear coat (1.0, the stock-livery
+// median) was tried on top and read as chrome on the black side panels; the
+// stock solid finish below stays.
 
 fn is_flat_normal(img: &Image) -> bool {
     let step = ((img.w * img.h) as usize / 65536).max(1);
@@ -588,7 +655,8 @@ impl<'a> Tex<'a> {
         let by_name = k.textures.iter().enumerate().filter(|(_, t)| t.active).map(|(i, t)| (t.name.to_lowercase(), i)).collect();
         let lim = std::env::var("ACECONV_TEXMAX").ok().and_then(|v| v.parse().ok()).unwrap_or(4096u32);
         Tex {
-            k, by_name, base: format!("content\\cars\\{id}"), done: HashMap::new(), used_names: HashSet::new(), means: HashMap::new(), means_under: HashMap::new(),
+            k, by_name, base: format!("content\\cars\\{id}"), done: HashMap::new(), metal_done: HashMap::new(), used_names: HashSet::new(), means: HashMap::new(),
+            means_under: HashMap::new(),
             max_color: lim.min(4096), max_other: lim.min(2048), default_skin: None, count: 0, bytes: 0, notes: Vec::new(),
         }
     }
@@ -694,8 +762,7 @@ impl<'a> Tex<'a> {
     /// keep their paint colour in the detail map: ks_mazda_miata's Skin_00 is
     /// a light grey with alpha 0 and each skin's metal_detail.dds is the
     /// colour). A detail that goes to a layer (`tiled_detail`) is left out
-    /// of the map. `paint`: also apply the paint tone curve (see
-    /// `paint_tone`). Returns (path, mean linear colour as shown, layer
+    /// of the map. Returns (path, mean linear colour as shown, layer
     /// included).
     pub fn albedo(&mut self, files: &mut Files, m: &Material, skin: Option<(&str, &Path)>, paint: bool) -> Option<(String, [f32; 3])> {
         let dname = m.texture("txDiffuse").unwrap_or("").to_string();
@@ -712,11 +779,10 @@ impl<'a> Tex<'a> {
             (h ^ dh.rotate_left(17) ^ (paint as u64) << 63 ^ (mult.to_bits() as u64) << 7, Role::Color)
         };
         let lut: Vec<f32> = (0..256).map(|i| srgb_lin(i as f32 / 255.0)).collect();
-        // the layer's mean (linear, toned for paint): only for the mean colour
+        // the layer's mean (linear): only for the mean colour
         let layer_mean = layered.as_ref().map(|(d, _, _, _)| {
             let mu = mean(d);
-            let f = |c: f32| if paint { srgb_lin(c).powf(0.75) } else { srgb_lin(c) };
-            [f(mu[0]), f(mu[1]), f(mu[2])]
+            [srgb_lin(mu[0]), srgb_lin(mu[1]), srgb_lin(mu[2])]
         });
         // shown mean = mean(v a) + layer mean x mean(v (1 - a))
         let shown = |s: &Self, p: &str| -> [f32; 3] {
@@ -761,10 +827,7 @@ impl<'a> Tex<'a> {
                     dmean
                 };
                 for k in 0..3 {
-                    let mut v = lut[c[k] as usize] * (d[k] + (1.0 - d[k]) * a);
-                    if paint {
-                        v = paint_tone(v);
-                    }
+                    let v = lut[c[k] as usize] * (d[k] + (1.0 - d[k]) * a);
                     sum[k] += v as f64;
                     under[k] += (v * (1.0 - a)) as f64;
                     px[i + k] = (lin_srgb(v) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
@@ -846,21 +909,11 @@ impl<'a> Tex<'a> {
                 self.put(files, &p, &a, Fmt::Bc4, false, &src);
                 Some(p)
             }
-            Role::Detail(paint) => {
-                // the AC1 detail colours as they multiply the base (linear);
-                // paint: its share of the paint tone curve, d^0.75 (0.85 is
-                // already in the base: tone(b d) = tone(b) x d^0.75)
+            Role::Detail(_) => {
+                // the AC1 detail colours as they multiply the base
                 let img = texture::resize_to(&img, self.cap(true, skin.map(|s| s.0)), true);
-                let img = if paint {
-                    let px = img.px.chunks_exact(4).flat_map(|c| {
-                        let f = |v: u8| (lin_srgb(srgb_lin(v as f32 / 255.0).powf(0.75)) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-                        [f(c[0]), f(c[1]), f(c[2]), 255]
-                    }).collect();
-                    Image { w: img.w, h: img.h, px }
-                } else {
-                    let px = img.px.chunks_exact(4).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
-                    Image { w: img.w, h: img.h, px }
-                };
+                let px = img.px.chunks_exact(4).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
+                let img = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_detail"));
                 self.put(files, &p, &img, Fmt::Bc1D, true, &src);
                 Some(p)
@@ -897,6 +950,72 @@ impl<'a> Tex<'a> {
 }
 
 impl<'a> Tex<'a> {
+    /// A reflective metal (`reflective_metal`) whose maps texture says where
+    /// it reflects, texel by texel (`metal_texel`): the colour (AC1's dimming
+    /// only off the metal), a metalness map and a roughness map, on the
+    /// diffuse's texels (the maps sampled at the same UV). None without both
+    /// textures. Returns (colour, metalness, roughness) paths.
+    pub fn metal_bake(&mut self, files: &mut Files, m: &Material, skin: Option<(&str, &Path)>, dim: f32, cap: f32) -> Option<(String, String, String)> {
+        let dname = m.texture("txDiffuse")?.to_string();
+        let mname = m.texture("txMaps")?.to_string();
+        let (dimg, d_skin, hd) = self.image(&dname, skin.map(|s| s.1))?;
+        let (mimg, m_skin, hm) = self.image(&mname, skin.map(|s| s.1))?;
+        let f0 = prop(m, "fresnelC").unwrap_or(0.04);
+        let named = name_metal(m);
+        let exp = prop(m, "ksSpecularEXP").unwrap_or(20.0);
+        let spec = prop(m, "ksSpecular").unwrap_or(0.3);
+        let mut key = hd ^ hm.rotate_left(23);
+        for (k, v) in [f0, named, exp, spec, dim, cap].into_iter().enumerate() {
+            key ^= (v.to_bits() as u64).rotate_left(7 + 9 * k as u32);
+        }
+        if let Some(v) = self.metal_done.get(&key) {
+            return v.clone();
+        }
+        let img = texture::resize_to(&dimg, self.cap(true, skin.map(|s| s.0)), true);
+        let (w, h) = (img.w, img.h);
+        let lut: Vec<f32> = (0..256).map(|i| srgb_lin(i as f32 / 255.0)).collect();
+        let n = (w * h * 4) as usize;
+        let (mut col, mut met, mut rou) = (vec![0u8; n], vec![0u8; n], vec![0u8; n]);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let mx = (x as u64 * mimg.w as u64 / w as u64) as u32;
+                let my = (y as u64 * mimg.h as u64 / h as u64) as u32;
+                let j = ((my * mimg.w + mx) * 4) as usize;
+                let c = |k: usize| mimg.px[j + k] as f32 / 255.0;
+                let (mt, r, t) = metal_texel(f0, named, exp, spec, dim, cap, c(0), c(1), c(2));
+                for k in 0..3 {
+                    col[i + k] = (lin_srgb(lut[img.px[i + k] as usize] * t) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+                }
+                col[i + 3] = img.px[i + 3];
+                let mv = (mt.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let rv = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+                met[i..i + 4].copy_from_slice(&[mv, mv, mv, 255]);
+                rou[i..i + 4].copy_from_slice(&[rv, rv, rv, 255]);
+            }
+        }
+        let dir = if d_skin || m_skin {
+            match skin {
+                Some((sname, _)) => format!("{}\\skins\\{}", self.base, slug(sname)),
+                None => format!("{}\\texture", self.base),
+            }
+        } else {
+            format!("{}\\texture", self.base)
+        };
+        let (dstem, mstem) = (slug(&dname), slug(&mname));
+        let col = Image { w, h, px: col };
+        let cp = self.unique_path(&dir, &format!("{dstem}_metalc"));
+        let fmt = colour_format(&col, false);
+        self.put(files, &cp, &col, fmt, true, &ac1_name(&dname, d_skin, skin.map(|s| s.0)));
+        let mp = self.unique_path(&dir, &format!("{mstem}_metal"));
+        self.put(files, &mp, &Image { w, h, px: met }, Fmt::Bc4, false, &ac1_name(&mname, m_skin, skin.map(|s| s.0)));
+        let rp = self.unique_path(&dir, &format!("{mstem}_metalr"));
+        self.put(files, &rp, &Image { w, h, px: rou }, Fmt::Bc4, false, &ac1_name(&mname, m_skin, skin.map(|s| s.0)));
+        let out = Some((cp, mp, rp));
+        self.metal_done.insert(key, out.clone());
+        out
+    }
+
     /// A multimap whose diffuse is one flat colour lying wholly under its
     /// tiled detail (alpha 0 everywhere): AC1 shows diffuse x detail, so the
     /// detail IS the surface - the S14's front splitter is a white
@@ -940,13 +1059,12 @@ impl<'a> Tex<'a> {
             return None;
         }
         // textured: the detail as the layer's colour map; flat: its colour
-        // as the layer's constant (linear; paint: d^0.75, see Role::Detail)
+        // as the layer's constant (linear)
         let (map, colour) = if textured {
             (Some(self.get(files, m.texture("txDetail")?, Role::Detail(paint), skin)?), [1.0; 3])
         } else {
             let mu = mean(&dimg);
-            let f = |c: f32| if paint { srgb_lin(c).powf(0.75) } else { srgb_lin(c) };
-            (None, [f(mu[0]), f(mu[1]), f(mu[2])])
+            (None, [srgb_lin(mu[0]), srgb_lin(mu[1]), srgb_lin(mu[2])])
         };
         let splat = if hi < 8 { None } else { Some(self.get(files, &dname, Role::Splat, skin)?) };
         let normal = m.texture("txNormalDetail").and_then(|n| self.get(files, n, Role::Normal, skin))
@@ -1304,6 +1422,9 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
     // surface draws black whatever txDiffuse holds (La Shush Street's
     // EXT_CARBON carries FLAT_NM.dds there: a normal map, lilac as colour)
     let unlit = prop(m, "ksDiffuse").unwrap_or(0.4) + prop(m, "ksAmbient").unwrap_or(0.3) < 0.01;
+    // a reflective metal with a maps texture goes texel by texel (`reflective_metal`)
+    let texel_cap = if inp.kind == Kind::Generic && !multimap && m.texture("txMaps").is_some() { reflective_metal(m, p.metal) } else { None };
+    let mut metal_maps: Option<(String, String)> = None;
     let img = tex.image(diffuse, skin.map(|x| x.1)).map(|x| x.0);
     // a near-black texture with nothing drawn in it falls back to a flat
     // dark grey; one with detail keeps it (La Shush Street's intercooler.dds,
@@ -1326,10 +1447,16 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
                     setp(&mut s, "Base_NormalScale", &[prop(m, "detailNormalBlend").unwrap_or(1.0).clamp(0.0, 1.0)]);
                 }
             } else {
-                if let Some((path, _)) = tex.albedo(files, m, skin, inp.kind == Kind::Paint) {
+                let baked = texel_cap.and_then(|cap| tex.metal_bake(files, m, skin, p.dim, cap));
+                let colour = match &baked {
+                    Some((c, _, _)) => Some(c.clone()),
+                    None => tex.albedo(files, m, skin, inp.kind == Kind::Paint).map(|x| x.0),
+                };
+                if let Some(path) = colour {
                     set_slot(&mut s, "Base_BaseColorMap", &path);
                     setp(&mut s, "Base_HasBaseColorMap", &[1.0]);
                 }
+                metal_maps = baked.map(|(_, mt, r)| (mt, r));
                 if let Some(d) = tex.detail_layer(files, m, skin, inp.kind == Kind::Paint) {
                     apply_detail(&mut s, &d);
                 }
@@ -1439,12 +1566,24 @@ fn generic(files: &mut Files, tex: &mut Tex, tmpl: &Msg, inp: &MatIn, diffuse: &
         let qe = 1.25f32.powf((exp.max(1.0).ln() / 1.25f32.ln()).round());
         let qs = (spec / 0.05).round() * 0.05;
         let role = Role::Rough((qe * 1000.0) as u32, (qs * 1000.0) as u32);
-        if inp.kind != Kind::RimBlur && inp.kind != Kind::Paint {
+        // a reflective metal: not the highlight's map (its own, below, or the scalar)
+        let shiny_metal = inp.kind == Kind::Generic && reflective_metal(m, p.metal).is_some();
+        if inp.kind != Kind::RimBlur && inp.kind != Kind::Paint && !shiny_metal {
             if let Some(rp) = tex.get(files, maps, role, skin) {
                 set_slot(&mut s, "Base_RoughnessMap", &rp);
                 setp(&mut s, "Base_HasRoughnessMap", &[1.0]);
             }
         }
+    }
+    // a reflective metal baked texel by texel: its metalness and roughness
+    // maps (a map replaces the scalar on stock: 494 of 645 metalness maps sit
+    // on a 0 scalar; 1 leaves it right either way)
+    if let Some((mt, r)) = &metal_maps {
+        set_slot(&mut s, "Base_MetalnessMap", mt);
+        setp(&mut s, "Base_HasMetalnessMap", &[1.0]);
+        set_slot(&mut s, "Base_RoughnessMap", r);
+        setp(&mut s, "Base_HasRoughnessMap", &[1.0]);
+        metal = 1.0;
     }
     setp(&mut s, "Base_Roughness", &[rough]);
     setp(&mut s, "Base_Metalness", &[metal.clamp(0.0, 1.0)]);
@@ -1473,6 +1612,57 @@ mod tests {
         assert!(roughness(10.0, 1.0) > 0.6);
         assert!(roughness(50.0, 0.05) > roughness(50.0, 1.0));
         assert_eq!(slug("rim blur_D.dds"), "rim_blur_d");
+    }
+
+    #[test]
+    fn reflective_metal_follows_its_reflection() {
+        let set = |m: &mut Material, k: &str, v: f32| m.props.push((k.into(), crate::ac1::kn5::Prop { value: v, v2: [v; 2], v3: [v; 3], v4: [v; 4] }));
+        // the La Shush Old Man's ext_chrome: a weak broad highlight on a full reflection
+        let mut c = mat("ext_chrome", "ksPerPixelMultiMap");
+        for (k, v) in [("fresnelC", 0.5), ("fresnelMaxLevel", 1.0), ("ksSpecular", 0.1), ("ksSpecularEXP", 15.0), ("ksDiffuse", 0.15), ("ksAmbient", 0.0)] {
+            set(&mut c, k, v);
+        }
+        let p = pbr(&c, Kind::Generic);
+        assert!(p.rough <= CHROME_ROUGH && p.metal > 0.9 && p.tint == 1.0, "{} {} {}", p.rough, p.metal, p.tint);
+        // a metal reflecting a little: capped at stock metal's roughness
+        let mut b = mat("ext_bolts", "ksPerPixelMultiMap");
+        for (k, v) in [("fresnelC", 0.5), ("fresnelMaxLevel", 0.4), ("ksSpecular", 0.1), ("ksSpecularEXP", 15.0)] {
+            set(&mut b, k, v);
+        }
+        assert!(pbr(&b, Kind::Generic).rough <= METAL_ROUGH_MAX);
+        // a metal with no reflection, and a dielectric, keep the highlight's roughness and their dimming
+        let mut d = mat("ext_cast", "ksPerPixelMultiMap");
+        for (k, v) in [("fresnelC", 0.5), ("fresnelMaxLevel", 0.1), ("ksSpecular", 0.1), ("ksSpecularEXP", 15.0), ("ksDiffuse", 0.15), ("ksAmbient", 0.0)] {
+            set(&mut d, k, v);
+        }
+        assert!(reflective_metal(&d, metalness(&d)).is_none() && pbr(&d, Kind::Generic).tint < 0.5);
+        let mut e = mat("ext_plastic", "ksPerPixelMultiMap");
+        for (k, v) in [("fresnelC", 0.05), ("fresnelMaxLevel", 1.0)] {
+            set(&mut e, k, v);
+        }
+        assert!(reflective_metal(&e, metalness(&e)).is_none());
+        // only the generic parts: paint keeps its own finish
+        assert!(pbr(&c, Kind::Paint).rough >= 0.2);
+        // AC1's dimming is kept for the dull texels
+        assert!(p.dim < 0.3);
+    }
+
+    #[test]
+    fn metal_texels_follow_the_maps_blue() {
+        // the Old Man's ext_chrome: fresnelC 0.5, ksSpecular 0.1 at 15, dimmed to 0.25
+        let t = |rgb: f32| metal_texel(0.5, 0.95, 15.0, 0.1, 0.25, CHROME_ROUGH, rgb, rgb, rgb);
+        // the exhaust (maps about white): metal, chrome-smooth, undimmed
+        let (mt, r, k) = t(1.0);
+        assert!(mt > 0.99 && r <= CHROME_ROUGH + 1e-6 && (k - 1.0).abs() < 1e-6, "{mt} {r} {k}");
+        // the side panels (maps about 0.05): not metal, the highlight's roughness, AC1's dimming
+        let (mt, r, k) = t(0.05);
+        assert!(mt < 0.06 && r > 0.6 && k < 0.3, "{mt} {r} {k}");
+        // the silencer (maps blue about 0.55, measured by area on the car): chrome
+        let (mt, r, k) = t(0.55);
+        assert!(mt > 0.99 && r <= CHROME_ROUGH + 1e-6 && k > 0.99, "{mt} {r} {k}");
+        // in between it blends
+        let (mt, r, _) = t(0.35);
+        assert!(mt > 0.3 && mt < 0.8 && r < t(0.05).1, "{mt} {r}");
     }
 
     #[test]
