@@ -187,6 +187,10 @@ pub fn write(files: &mut Files, id: &str, car: &Car, outlets: &[Outlet], tier: u
             let rot = [r[0], if (r[1].abs() - 180.0).abs() < 1e-3 { 0.0 } else { r[1] }, 0.0];
             m.set(3, Val::Msg(fx::transform([o.pos[0] as f32, o.pos[1] as f32, o.pos[2] as f32], rot)));
             m.set_varint(7, kind);
+            // the effect pack goes with the kind, as on every stock actor
+            // (2 / 3 / 4 -> backfire_type_1 / 2 / 3); the donor's type_1
+            // stayed under kind 4 (La Shush Momentum Ice: no flames in game)
+            m.set_str(6, &format!("content\\cars\\common_assets\\emitters\\backfire_type_{}.carparticleemitterdata_emitterspack", kind - 1));
             m.fields.sort_by_key(|f| f.num);
             new.push(m);
         }
