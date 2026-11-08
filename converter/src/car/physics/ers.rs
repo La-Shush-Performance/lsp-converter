@@ -94,6 +94,11 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     if c.data_text("ers.ini").is_none() {
         return Ok(());
     }
+    // A / B test builds: `ACECONV_ERS=off` leaves the hybrid system out
+    if std::env::var("ACECONV_ERS").map(|v| v.eq_ignore_ascii_case("off")).unwrap_or(false) {
+        c.note("physics: TEST BUILD: ACECONV_ERS=off, ers.ini not converted");
+        return Ok(());
+    }
     let e = c.ini("ers.ini").clone();
     let base = c.base.clone();
     let mut rear = controllers(c, "ctrl_ers_", "ERS");
