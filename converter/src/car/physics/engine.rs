@@ -24,7 +24,10 @@
 //!   are the game's enum (DynamicControllerStageData.Input: 18 RPMS, 2 Gas,
 //!   6 Speed, 7 Gear, 17 Const, ...). AC1's ctrl_turbo<n>.ini controller
 //!   caps the boost instead, so ours keeps AC1's MAX_BOOST as the wastegate:
-//!   at full spool both give min(MAX_BOOST, controller).
+//!   at full spool both give min(MAX_BOOST, controller). EVO feeds an
+//!   engine's turbo controllers only rpm and throttle (`ctrl::TURBO_LIVE`):
+//!   a stage on any other input is fixed at a constant once gearing and
+//!   tyres are known (`ctrl::fix_turbo_inputs`; Gear at the top gear).
 //! - Coast (OURS): AC1 [COAST_REF] (TORQUE at RPM, NON_LINEARITY 0 linear ..
 //!   1 quadratic) -> a negative torque curve from 0 to 1.2 x the limiter,
 //!   as stock coast curves are; a coast .lut is used as it is (negated when
@@ -52,6 +55,8 @@ struct Turbo {
     gamma: f64,
     adjustable: bool,
     stages: Vec<Stage>,
+    /// forward gears (drivetrain.ini [GEARS] COUNT): a Gear stage's fixed key
+    top_gear: f64,
 }
 
 impl Turbo {
@@ -62,11 +67,13 @@ impl Turbo {
         if !self.stages.is_empty() {
             let mut v = 0.0;
             for s in &self.stages {
+                // the game's own rule (ctrl::turbo_fixed); top speed is not
+                // known yet, so a Speed stage reads its table's top end
                 let x = match s.input {
                     18 => pbx::lerp_lut(&s.lut, rpm),
                     2 => pbx::lerp_lut(&s.lut, 1.0),
                     17 => s.lut.first().map(|p| p.1).unwrap_or(0.0),
-                    _ => s.lut.iter().fold(0.0f64, |a, p| a.max(p.1)),
+                    _ => super::ctrl::turbo_fixed(s, self.top_gear, f64::MAX).unwrap_or(0.0),
                 };
                 if s.add { v += x } else { v *= x }
             }
@@ -141,6 +148,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
             gamma: ei.num(&s, "GAMMA").unwrap_or(2.0),
             adjustable: ei.num(&s, "COCKPIT_ADJUSTABLE").unwrap_or(0.0) > 0.0,
             stages,
+            top_gear: c.ini("drivetrain.ini").num("GEARS", "COUNT").filter(|v| *v >= 1.0).unwrap_or(6.0),
         });
     }
     c.d.torque = torque.clone();
@@ -217,7 +225,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
         }
         let konst = [Stage { input: 17, add: true, lut: vec![(0.0, t.max_boost)], filter: 0.99, up: None, down: None }];
         let stages: &[Stage] = if t.stages.is_empty() { &konst } else { &t.stages };
-        let (dc, files) = super::ctrl::message_turbo(stages, &format!("{base}\\data\\ctrl_turbo{k}_controller"));
+        let (dc, files) = super::ctrl::message(stages, &format!("{base}\\data\\ctrl_turbo{k}_controller"));
         ctrl_files.extend(files);
         e.push(25, Val::Msg(dc));
     }

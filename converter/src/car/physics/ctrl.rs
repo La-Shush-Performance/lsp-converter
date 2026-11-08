@@ -84,40 +84,15 @@ pub fn scaled(stages: &[Stage], k: f64) -> Vec<Stage> {
     }).collect()
 }
 
-/// Curve files of stages AC1 keys on GEAR end in this; `gear_to_speed`
-/// rewrites them once the gearing and tyres are known.
-const GEAR_CURVE: &str = "_gear.curve";
-
 /// DynamicControllerData {2 stages} with one `.curve` per stage, named
 /// `<prefix><n>.curve`; the curve files are returned for the caller to put.
 pub fn message(stages: &[Stage], prefix: &str) -> (Msg, Vec<(String, Vec<u8>)>) {
-    message_with(stages, prefix, false)
-}
-
-/// `message` for a turbo controller: a GEAR stage is written as a SPEED
-/// stage (OURS), because EVO's Gear input starves converted turbo
-/// controllers. The La Shush Taipan's gear boost table (1st 0.4 .. 5th+ 1.3,
-/// AC1 wastegate 1.0) gave about 0 boost in 2nd and 4th at Brands Hatch Indy
-/// and switched on only on some 3rd-gear runs; the same table with Kunos's
-/// stage settings (filter 0.99, up limit 10000) did the same, while a
-/// constant 1.0 controller and no controller pulled +0.9 .. +1.1 in every
-/// gear, and the table as road speed (`gear_to_speed`) +0.6 .. +1.4 with a
-/// 287 km/h top speed against 251 (8 Nov 2026). Other controllers keep the
-/// Gear input: the La Shush Hypo's ERS delivery table (2nd 0.2, 3rd+ 1.0)
-/// delivered 94 % in 3rd and 92 % in 4th in EVO. The stage keeps its curve
-/// with gear keys under `..._gear.curve` until `gear_to_speed` rewrites it.
-pub fn message_turbo(stages: &[Stage], prefix: &str) -> (Msg, Vec<(String, Vec<u8>)>) {
-    message_with(stages, prefix, true)
-}
-
-fn message_with(stages: &[Stage], prefix: &str, gear_as_speed: bool) -> (Msg, Vec<(String, Vec<u8>)>) {
     let mut dc = Msg::default();
     let mut files = Vec::new();
     for (j, s) in stages.iter().enumerate() {
-        let gear = gear_as_speed && s.input == 7;
-        let p = if gear { format!("{prefix}{j}{GEAR_CURVE}") } else { format!("{prefix}{j}.curve") };
+        let p = format!("{prefix}{j}.curve");
         let mut st = Msg::default();
-        i(&mut st, 1, if gear { 6 } else { s.input as i64 });
+        i(&mut st, 1, s.input as i64);
         i(&mut st, 2, if s.add { 1 } else { 2 });
         st.set_str(3, &p);
         f(&mut st, 4, s.filter);
@@ -132,16 +107,52 @@ fn message_with(stages: &[Stage], prefix: &str, gear_as_speed: bool) -> (Msg, Ve
     (dc, files)
 }
 
-/// Turn every gear-keyed turbo stage curve (`message_turbo`) into road speed (km/h):
-/// gear k's value holds from the speed where gear k-1 reaches the upshift
-/// rpm to where gear k does, so a car shifted near the top of each gear
-/// gets AC1's value in every gear. R / N share 1st's speeds and take 1st's
-/// value. Runs after the drivetrain and tyre stages.
-pub fn gear_to_speed(c: &mut Ctx) {
-    let paths: Vec<String> = c.files.under(&format!("{}\\data", c.base)).into_iter().filter(|p| p.to_lowercase().ends_with(GEAR_CURVE)).collect();
-    if paths.is_empty() {
-        return;
+/// The inputs an engine's turbo and wastegate controllers really get in
+/// EVO: Gas, Const and RPMS. The game binds every controller's inputs to
+/// the car when it builds it (exe 0x1423EC0B0), but the engine's turbo
+/// controller loader (0x14237C160) ends in its max-power sweep (0x14237C8B0,
+/// which calls 0x14237A2B0 per rpm), and that sweep copies its own input
+/// table over the input pointers of the engine's stored turbo controllers
+/// and never puts them back. Only RPMS and Gas point at live engine state
+/// (engine +0x424 / +0x414, refreshed every step); every other input points
+/// into the sweep's dead stack frame (Gear at a slot that held 1, the rest
+/// at zeros, later whatever the stack holds). Every stock turbo controller
+/// is an RPMS stage (the Ferrari 296 GTB adds a Gear stage). Driven: on
+/// 8 Nov 2026 the La Shush Taipan's AC1 gear table (1st 0.4 .. 5th+ 1.3)
+/// gave next to no boost in some gears while a Const 1.0 stage pulled full
+/// boost; on 9 Nov the same table rewritten as road speed held 0.4 bar all
+/// lap (its value at 0 km/h), and with the stage fixed (`turbo_fixed`) the
+/// gauge read 1.0 bar in every gear and the top speed rose from 290 to
+/// 311 km/h (AC1 316). ERS, differential and other controllers are built
+/// apart from the engine and keep every input.
+pub const TURBO_LIVE: [u64; 3] = [2, 17, 18];
+
+/// The constant a turbo controller stage on an input EVO does not feed is
+/// fixed at (OURS; None for a live input): a Gear stage at the top forward
+/// gear (AC1's controllers read gear k as k, 1 = first), a Speed stage at
+/// the car's top speed, any other input at 0 (straight line, no brake, no
+/// steering). EVO caps the boost at the wastegate as AC1 does (boost =
+/// target x spool, at most WASTEGATE x the boost level: exe 0x1424B1200),
+/// so a gear table reaching past the wastegate in top gear runs at the
+/// wastegate in every gear: the La Shush Taipan gets AC1's 1.0 bar from
+/// 4th up, and more than AC1's 0.4 / 0.6 / 0.8 in 1st to 3rd.
+pub fn turbo_fixed(s: &Stage, top_gear: f64, top_kmh: f64) -> Option<f64> {
+    if TURBO_LIVE.contains(&s.input) {
+        return None;
     }
+    let x = match s.input {
+        7 => top_gear,
+        6 => top_kmh,
+        _ => 0.0,
+    };
+    Some(pbx::lerp_lut(&s.lut, x))
+}
+
+/// Rewrite every turbo / wastegate controller stage of the engine (CarData
+/// f4 f25 / f26) whose input EVO does not feed as a Const stage at
+/// `turbo_fixed`'s value. Runs after the drivetrain and tyre stages (top
+/// gear and top speed: the limiter in top gear on the driven tyres).
+pub fn fix_turbo_inputs(c: &mut Ctx) {
     let d = &c.d;
     let r = match d.traction {
         1 => d.tyre_radius[0],
@@ -149,33 +160,41 @@ pub fn gear_to_speed(c: &mut Ctx) {
         _ => d.tyre_radius[1],
     }
     .max(0.15);
-    let up = if d.shift_up_rpm > 0.0 { d.shift_up_rpm } else { d.limiter };
-    // km/h at the upshift rpm in each forward gear
-    let top: Vec<f64> = d.gears.iter().filter(|g| **g > 0.0).map(|g| up / 60.0 * 2.0 * std::f64::consts::PI * r / (g * d.final_drive.max(0.1)) * 3.6).collect();
-    if top.is_empty() {
-        c.note("physics: gear-keyed controller stages kept as speed stages without gearing - left as written");
-        return;
+    let top_gear = d.gears.iter().filter(|g| **g > 0.0).count() as f64;
+    let top_kmh = d.gears.iter().filter(|g| **g > 0.0).last()
+        .map(|g| d.limiter / 60.0 * 2.0 * std::f64::consts::PI * r / (g * d.final_drive.max(0.1)) * 3.6)
+        .unwrap_or(300.0);
+    let names = |n: u64| match n {
+        1 => "Brake", 3 => "LatG", 4 => "LonG", 5 => "Steer", 6 => "Speed", 7 => "Gear", 14 => "OversteerFactor", 16 => "SteerDEG",
+        _ => "input",
+    };
+    let mut notes = Vec::new();
+    let Some(ei) = c.cd.idx(4).first().copied() else { return };
+    let files = &c.files;
+    let Ok(e) = c.cd.open(ei) else { return };
+    for field in [25u32, 26] {
+        for (k, ci) in e.idx(field).into_iter().enumerate() {
+            let Ok(dc) = e.open(ci) else { continue };
+            for si in dc.idx(2) {
+                let Ok(st) = dc.open(si) else { continue };
+                let input = st.varint(1).unwrap_or(0);
+                let lut = st.str(3).and_then(|p| files.find_ci(&p).and_then(|key| files.get(&key).map(|b| pbx::read_curve(b)))).unwrap_or_default();
+                let stage = Stage { input, add: st.varint(2) != Some(2), lut, filter: 0.0, up: None, down: None };
+                let Some(v) = turbo_fixed(&stage, top_gear, top_kmh) else { continue };
+                st.set_varint(1, 17);
+                f(st, 8, v);
+                st.remove(3);
+                st.fields.sort_by_key(|x| x.num);
+                let at = match input { 7 => format!("top gear {top_gear:.0}"), 6 => format!("top speed {top_kmh:.0} km/h"), _ => "0".to_string() };
+                notes.push(format!(
+                    "physics: {} controller {k}: {} stage fixed at {v:.2} ({at}); EVO's turbo controllers see only rpm and throttle",
+                    if field == 25 { "turbo" } else { "wastegate" }, names(input)
+                ));
+            }
+        }
     }
-    for p in paths {
-        let gear_lut = c.files.get(&p).map(|b| pbx::read_curve(b)).unwrap_or_default();
-        if gear_lut.is_empty() {
-            continue;
-        }
-        let at = |k: usize| pbx::lerp_lut(&gear_lut, k as f64);
-        let mut lut = vec![(0.0, at(1))];
-        for k in 1..top.len() {
-            let v = top[k - 1];
-            lut.push((v - 1.0, at(k)));
-            lut.push((v, at(k + 1)));
-        }
-        lut.push((top[top.len() - 1].max(lut.last().unwrap().0 + 1.0), at(top.len())));
-        lut.push((1000.0, at(top.len())));
-        let name = p.rsplit('\\').next().unwrap_or(&p).to_string();
-        c.note(format!(
-            "physics: controller {name}: AC1 gear table -> road speed (EVO's Gear input starves converted turbo controllers); shifts at {} km/h",
-            top.iter().map(|v| format!("{v:.0}")).collect::<Vec<_>>().join(" / ")
-        ));
-        c.put(&p, pbx::curve(&lut));
+    for n in notes {
+        c.note(n);
     }
 }
 
@@ -183,24 +202,37 @@ pub fn gear_to_speed(c: &mut Ctx) {
 mod tests {
     use super::*;
 
-    fn gear_stage() -> Vec<Stage> {
-        vec![Stage { input: 7, add: true, lut: vec![(0.0, 0.0), (1.0, 0.4), (5.0, 1.3)], filter: 0.9, up: Some(7.0), down: Some(0.0) }]
+    fn stage(input: u64, lut: Vec<(f64, f64)>) -> Stage {
+        Stage { input, add: true, lut, filter: 0.9, up: Some(7.0), down: Some(0.0) }
     }
 
     #[test]
-    fn turbo_gear_stage_becomes_speed() {
-        let (m, files) = message_turbo(&gear_stage(), "x/ctrl_turbo0_controller");
-        let st = &m.subs(2)[0];
-        assert_eq!(st.varint(1), Some(6));
-        assert!(st.str(3).unwrap().ends_with(GEAR_CURVE));
-        assert!(files[0].0.ends_with(GEAR_CURVE));
+    fn turbo_gear_stage_is_fixed_at_top_gear() {
+        let s = stage(7, vec![(0.0, 0.0), (1.0, 0.4), (2.0, 0.6), (3.0, 0.8), (4.0, 1.0), (5.0, 1.3), (7.0, 1.3)]);
+        assert_eq!(turbo_fixed(&s, 7.0, 320.0), Some(1.3));
+        assert_eq!(turbo_fixed(&s, 4.0, 320.0), Some(1.0));
     }
 
     #[test]
-    fn other_gear_stage_keeps_gear() {
-        let (m, files) = message(&gear_stage(), "x/ctrl_ers_0_controller");
+    fn turbo_speed_stage_is_fixed_at_top_speed_others_at_zero() {
+        let s = stage(6, vec![(0.0, 0.4), (200.0, 1.0), (400.0, 2.0)]);
+        assert_eq!(turbo_fixed(&s, 6.0, 300.0), Some(1.5));
+        let steer = stage(5, vec![(-1.0, 0.5), (0.0, 1.0), (1.0, 0.5)]);
+        assert_eq!(turbo_fixed(&steer, 6.0, 300.0), Some(1.0));
+    }
+
+    #[test]
+    fn turbo_rpm_gas_const_stay_live() {
+        for input in [2, 17, 18] {
+            assert_eq!(turbo_fixed(&stage(input, vec![(0.0, 1.0), (9000.0, 2.0)]), 6.0, 300.0), None);
+        }
+    }
+
+    #[test]
+    fn controllers_keep_their_inputs() {
+        let (m, files) = message(&[stage(7, vec![(0.0, 0.0), (1.0, 0.4)])], "x/ctrl_ers_0_controller");
         let st = &m.subs(2)[0];
         assert_eq!(st.varint(1), Some(7));
-        assert!(!files[0].0.ends_with(GEAR_CURVE));
+        assert!(files[0].0.ends_with("controller0.curve"));
     }
 }
