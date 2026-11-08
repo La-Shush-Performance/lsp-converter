@@ -217,7 +217,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
         }
         let konst = [Stage { input: 17, add: true, lut: vec![(0.0, t.max_boost)], filter: 0.99, up: None, down: None }];
         let stages: &[Stage] = if t.stages.is_empty() { &konst } else { &t.stages };
-        let (dc, files) = super::ctrl::message(stages, &format!("{base}\\data\\ctrl_turbo{k}_controller"));
+        let (dc, files) = super::ctrl::message_turbo(stages, &format!("{base}\\data\\ctrl_turbo{k}_controller"));
         ctrl_files.extend(files);
         e.push(25, Val::Msg(dc));
     }

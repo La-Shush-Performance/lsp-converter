@@ -298,6 +298,8 @@ pub fn write(files: &mut Files, id: &str, stem: &str, car: &Car, frame: &Frame, 
     chassis::electronics(&mut c)?;
     engine::start_assist(&mut c)?;
     tyres::write(&mut c)?;
+    // gear-keyed turbo controller stages -> road speed (needs gearing and tyres)
+    ctrl::gear_to_speed(&mut c);
     chassis::brake_strength(&mut c)?;
     suspension::write(&mut c)?;
     aero::write(&mut c)?;
