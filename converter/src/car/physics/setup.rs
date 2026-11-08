@@ -302,6 +302,12 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     // 1, ks_porsche_935_78_moby_dick 0.90); EVO's turbo item is a percent
     // (stock limits 0 .. 100). Read as-is, 1.00 gave the S14 9 Race 1 %
     // boost (about 250 kW at the wheels of its 713 kW, 2 Nov).
+    // AC1's own boost setting (cockpit / setup spinner, a setup's [TURBO]
+    // VALUE) runs 0 .. 10 and the game multiplies it by 0.1
+    // (acs.exe SetupElectronics::addTurbo, Turbo::setTurboBoostLevel):
+    // AC1 10 = 1.0 = EVO 100 %. Turbo::step caps boost at WASTEGATE x the
+    // level (no cap when WASTEGATE is 0); a turbo that is not
+    // COCKPIT_ADJUSTABLE always runs at 1.0.
     let turbo_default = (c.ini("engine.ini").num("ENGINE_DATA", "DEFAULT_TURBO_ADJUSTMENT").unwrap_or(1.0) * 100.0).clamp(0.0, 100.0);
     // ---- values
     let mut set = Msg::default();
