@@ -103,12 +103,38 @@ pub fn write(c: &mut Ctx) -> Result<()> {
             continue;
         }
         let mb = ei.num(&s, "MAX_BOOST").unwrap_or(0.0);
-        let wg = ei.num(&s, "WASTEGATE").unwrap_or(mb);
-        let stages = controller(c, n);
+        let mut wg = ei.num(&s, "WASTEGATE").unwrap_or(mb);
+        // AC1 (acs.exe Engine::stepTurbos, Turbo::step): ctrl_turbo<n>.ini's
+        // output replaces MAX_BOOST, ctrl_wastegate<n>.ini's replaces
+        // WASTEGATE, and boost is then capped at WASTEGATE x the boost level
+        // (no cap when WASTEGATE is 0). Until 8 Nov a ctrl_turbo turbo lost
+        // that cap (WASTEGATE became max(MAX_BOOST, WASTEGATE): the La Shush
+        // Taipan's gear controller reached 1.3 over AC1's 1.0).
+        let mut stages = controller(c, n);
+        let wg_stages = super::ctrl::read(c, &format!("ctrl_wastegate{n}.ini"), &format!("wastegate {n}")).unwrap_or_default();
+        if !wg_stages.is_empty() {
+            if stages.is_empty() {
+                // EVO's controller output is the boost target: the wastegate
+                // controller drives it, under MAX_BOOST (AC1 spools MAX_BOOST
+                // under the moving wastegate; at full spool both give
+                // min(MAX_BOOST, controller))
+                stages = wg_stages;
+                wg = mb;
+                c.note(format!("physics: turbo {n}: ctrl_wastegate{n}.ini drives the boost target, under MAX_BOOST {mb}"));
+            } else {
+                // both: EVO has one controller per turbo; the boost one wins
+                // and the wastegate controller's highest output stands as the
+                // fixed wastegate
+                let hi = wg_stages.iter().flat_map(|s| s.lut.iter().map(|p| p.1)).fold(0.0f64, f64::max);
+                if hi > 0.0 {
+                    wg = hi;
+                }
+                c.note(format!("physics: turbo {n}: ctrl_turbo{n}.ini and ctrl_wastegate{n}.ini; the wastegate is fixed at {wg}"));
+            }
+        }
         turbos.push(Turbo {
             max_boost: mb,
-            // with an AC1 controller the controller is the cap: keep MAX_BOOST as the wastegate
-            wastegate: if stages.is_empty() { wg } else { mb.max(wg) },
+            wastegate: wg,
             lag_up: ei.num(&s, "LAG_UP").unwrap_or(0.99),
             lag_dn: ei.num(&s, "LAG_DN").unwrap_or(0.99),
             ref_rpm: ei.num(&s, "REFERENCE_RPM").unwrap_or(3000.0),
