@@ -369,17 +369,22 @@ fn brake_dx(mode: BrakeDx, class: &str, ac1: Option<f64>) -> Option<f64> {
     }
 }
 
-/// `ACECONV_TYRE_INERTIA=ac1` (test builds): TyresData f5 `angularInertia`
-/// becomes AC1's ANGULAR_INERTIA instead of the template's scaled by width x
-/// radius^2. The converted La Shush Street has 2.85 / 3.92 against AC1's
-/// 1.6 / 1.9, and its locked fronts stay locked about twice as long as AC1's
-/// with ABS off (0.95 .. 1.05 s against 0.40 .. 0.45 s, 3 Nov). Stock EVO
-/// tyres: 0.80 .. 5.77, median 2.38 (337 files); whether EVO's figure counts
-/// more of the wheel than AC1's is not known. Driven 3 Nov, not a rule: the
-/// lock-ups lasted as long (0.85 s) and came more often (2.9 a minute against
-/// 0.8 .. 1.3); a released wheel spins back up in 0.1 .. 0.3 s in either game.
-fn ac1_inertia_test() -> bool {
-    std::env::var("ACECONV_TYRE_INERTIA").map(|v| v.eq_ignore_ascii_case("ac1")).unwrap_or(false)
+/// TyresData f5 `angularInertia` is AC1's ANGULAR_INERTIA (rim, tyre and
+/// brake disc together in AC1); without one (or outside 0.1 .. 20) the
+/// template's, scaled by width x radius^2. Until 9 Nov 2026 the scaled
+/// template was the rule: it gave the La Shush Taipan 3.88 / 4.85 against
+/// AC1's 1.23 / 1.42 (the Street 2.85 / 3.92 against 1.6 / 1.9; stock EVO
+/// tyres 0.80 .. 5.77, median 2.38), and the converted Taipan accelerated as
+/// if about 250 kg heavier than AC1's at the same gear and rpm. Driven
+/// 9 Nov, Brands Hatch Indy, the same build with AC1's inertia: +7 .. 12 %
+/// pull in 3rd, 4th and 6th, top speed 314 km/h against 311 (AC1 316), and
+/// lock-ups under braking 2.4 a minute against 0.9, toward AC1's own lap
+/// (8.4 a minute). (3 Nov, the Street with ABS off: lock-ups as long, 0.85 s,
+/// and more frequent, 2.9 a minute against 0.8 .. 1.3; a released wheel
+/// spins back up in 0.1 .. 0.3 s in either game.)
+/// `ACECONV_TYRE_INERTIA=template` (test builds) keeps the scaled template.
+fn template_inertia_test() -> bool {
+    std::env::var("ACECONV_TYRE_INERTIA").map(|v| v.eq_ignore_ascii_case("template")).unwrap_or(false)
 }
 
 /// Set the grip (D x k on each axis) and put the file. `slick`: an AC1 slick
@@ -471,14 +476,19 @@ fn build(c: &mut Ctx, a: &Ax, fz: f64, file: &str, class: &'static str, used: Op
         f(td, 1, a.width);
         f(td, 2, a.radius);
         f(td, 6, rim);
-        // angular inertia scales with width x radius^2
+        // AC1's ANGULAR_INERTIA; the template's (scaling with width x
+        // radius^2) without one (template_inertia_test)
         let scaled = ai * (a.width / tw) * (a.radius / tr).powi(2);
-        match (ac1_inertia_test(), a.inertia) {
+        match (template_inertia_test(), a.inertia) {
+            (false, Some(i)) => f(td, 5, i),
             (true, Some(i)) => {
-                f(td, 5, i);
-                c.note(format!("physics: TEST BUILD: {file} angular inertia {scaled:.2} -> {i:.2} (AC1 ANGULAR_INERTIA)"));
+                f(td, 5, scaled);
+                c.note(format!("physics: TEST BUILD: {file} angular inertia {i:.2} (AC1) -> {scaled:.2} (template)"));
             }
-            _ => f(td, 5, scaled),
+            (_, None) => {
+                f(td, 5, scaled);
+                c.note(format!("physics: {file} has no usable ANGULAR_INERTIA; the template's {scaled:.2}"));
+            }
         }
     }
     let mu_y = mu_at(&m, fz, false);
