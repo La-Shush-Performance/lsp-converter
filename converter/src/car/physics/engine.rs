@@ -10,7 +10,15 @@
 //! - Turbos (TurboData) keep AC1's [TURBO_n] names: MAX_BOOST, WASTEGATE,
 //!   LAG_UP / LAG_DN, REFERENCE_RPM -> rpm_Ref, GAMMA -> gamma_Rpm and
 //!   gamma_Gas (quattro: AC1 1.8 / 1.03 -> EVO 1.8 / 1.04). The engine's
-//!   `max_turbo_boost` is the boost cap.
+//!   `max_turbo_boost` is the boost cap of the whole engine: the sum of
+//!   each turbo's own cap (min of MAX_BOOST and WASTEGATE), as on every
+//!   stock car with two turbos and no controller (F40 LM 1.3 + 1.3 = 2.6,
+//!   288 GTO 0.6 + 0.2 = 0.8, M4 CSL, Giulia GTAm, Supra drift). AC1 adds
+//!   its turbos' boost the same way. Until 8 Nov it was the largest single
+//!   turbo's cap, about half for a twin turbo (La Shush Hypo 0.59 of 1.18).
+//!   The game does not limit boost with it: Hypo A (0.59) and B (1.18)
+//!   pulled the same at Oulton Park (4th, 180 .. 200 km/h: 0.29 .. 0.32 g
+//!   both, 8 Nov), so the sum only keeps the file like stock.
 //! - Boost controllers: EVO's controller output IS the boost target (stock
 //!   turbos with a controller often have no max_boost at all); stage inputs
 //!   are the game's enum (DynamicControllerStageData.Input: 18 RPMS, 2 Gas,
@@ -187,7 +195,8 @@ pub fn write(c: &mut Ctx) -> Result<()> {
         ctrl_files.extend(files);
         e.push(25, Val::Msg(dc));
     }
-    if let Some(cap) = turbos.iter().map(|t| if t.wastegate > 0.0 { t.max_boost.min(t.wastegate) } else { t.max_boost }).reduce(f64::max) {
+    // the engine's cap is the sum of the turbos' caps (module notes)
+    if let Some(cap) = turbos.iter().map(|t| if t.wastegate > 0.0 { t.max_boost.min(t.wastegate) } else { t.max_boost }).reduce(|a, b| a + b) {
         f(e, 34, cap);
     }
     e.fields.sort_by_key(|x| x.num);
