@@ -378,6 +378,13 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     if d.turbo_adjustable {
         el.push(7, fv(turbo_default));
     }
+    // ERS (ers.rs): the deployment map is the 0-based controller index, the
+    // recovery a percent the game copies over its own 0.5 (absent = 0, no
+    // recharge); AC1's recovery default is 1.0
+    if let Some(e) = &d.ers {
+        el.push(8, fv(e.default as f64));
+        el.push(9, fv(100.0));
+    }
     set.push(5, mv(el));
     let mut aero = Msg::default();
     for k in 0..4 {
@@ -510,6 +517,11 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     el.push(6, mv(lim("esc", 0.0, None)));
     let tl = s.with_prefix("TURBO_").next().and_then(|(sec, _)| ac1_range(&s, sec, 1.0));
     el.push(7, mv(lim("turbo", if d.turbo_adjustable { turbo_default } else { 0.0 }, if d.turbo_adjustable { tl.or(Some((0.0, 100.0, 1.0))) } else { None })));
+    if let Some(e) = &d.ers {
+        let n = e.controllers.max(1) as f64 - 1.0;
+        el.push(8, mv(lim("ers_map", e.default as f64, (n > 0.0).then_some((0.0, n, 1.0)))));
+        el.push(9, mv(lim("ers_recharge", 100.0, e.recovery_adjustable.then_some((0.0, 100.0, 10.0)))));
+    }
     li.push(5, mv(el));
     let mut aero = Msg::default();
     for k in 0..4 {

@@ -26,6 +26,7 @@ pub mod ctrl;
 pub mod drivetrain;
 pub mod dtcheck;
 pub mod engine;
+pub mod ers;
 pub mod pbx;
 pub mod profile;
 pub mod setup;
@@ -132,6 +133,8 @@ pub struct Derived {
     /// the default compound is a slick (rule 5 gives it racing-slick camber
     /// and toe even on a wider-peaked EVO model, tyres.rs `slick_model`)
     pub slick: bool,
+    /// the AC1 hybrid system as converted (ers.rs); None without ers.ini
+    pub ers: Option<ers::Ers>,
 }
 
 pub struct Ctx<'a> {
@@ -290,6 +293,7 @@ pub fn write(files: &mut Files, id: &str, stem: &str, car: &Car, frame: &Frame, 
     chassis::general(&mut c)?;
     engine::write(&mut c)?;
     drivetrain::write(&mut c)?;
+    ers::write(&mut c)?;
     chassis::brakes_steering(&mut c)?;
     chassis::electronics(&mut c)?;
     engine::start_assist(&mut c)?;

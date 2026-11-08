@@ -574,6 +574,14 @@ pub fn car(kspkg: &Path, game: &Game) -> Result<Report> {
         for e in de {
             r.err(e);
         }
+        let lower: std::collections::HashSet<String> = files.keys().map(|k| k.to_lowercase()).collect();
+        let (ee, ew) = crate::car::physics::ers::check(&cd, &|p: &str| lower.contains(&p.to_lowercase()));
+        for w in ew {
+            r.warn(w);
+        }
+        for e in ee {
+            r.err(e);
+        }
     }
     Ok(r)
 }
