@@ -9,6 +9,20 @@
 //! mesh origin relative to the physics CoG. Brakes: `frontBias` is
 //! FRONT_SHARE in percent (supra_mkiv 0.695 -> 69.5) and `totalTorque` is
 //! MAX_TORQUE (supra 2800 -> 2800). Controls are car.ini [CONTROLS].
+//!
+//! Mass: `general.totalMass` is the chassis body only. EVO sets the chassis
+//! rigid body to totalMass as it is (exe 0x142394844, body box sizes from
+//! `body_box_sizes`) and gives every hub its own bodies from the geometry's
+//! `hubMass` on top (0x14241A4C6: 0.8 of it on the hub, 0.2 on the upright;
+//! 20 kg when 0). AC1 sets its chassis to TOTALMASS less the hubs
+//! (acs.exe Car::calcBodyMass: TOTALMASS - each corner's Suspension::getMass,
+//! half an axle's on each side), so an AC1 car weighs TOTALMASS (+ fuel, its
+//! own body in both games). The converter wrote TOTALMASS until 9 Nov 2026,
+//! so every converted car carried its hubs twice (La Shush Taipan 635 + 95 kg
+//! of hubs + 15 kg of fuel = 745 kg in EVO against 650 in AC1). totalMass is
+//! now TOTALMASS less that unsprung mass (`unsprung`); `Derived::mass` stays
+//! the whole car for the load-based stages, the AI / PI models take the
+//! chassis as stock CarData gives it (ai.rs).
 
 use anyhow::Result;
 
@@ -30,9 +44,30 @@ pub fn clamp_note(c: &mut Ctx, what: &str, v: f64, r: (f64, f64)) -> f64 {
     o
 }
 
+/// The unsprung mass AC1 counts inside TOTALMASS (Car::calcBodyMass): each
+/// corner's HUB_MASS, an AXLE's once per axle (AC1 puts half of it on each
+/// side). The suspension stage writes the same HUB_MASS (40 kg when absent)
+/// as the hub masses EVO adds on top of totalMass. EVO's axle bodies are not
+/// read: an axle is taken out once, as AC1 does.
+pub fn unsprung(s: &crate::ac1::ini::Ini) -> f64 {
+    ["FRONT", "REAR"].iter().map(|sec| {
+        let hub = s.num(sec, "HUB_MASS").unwrap_or(40.0).max(0.0);
+        let axle = s.get(sec, "TYPE").map(|t| t.trim().eq_ignore_ascii_case("AXLE")).unwrap_or(false);
+        if axle { hub } else { 2.0 * hub }
+    }).sum()
+}
+
 pub fn general(c: &mut Ctx) -> Result<()> {
     let ci = c.ini("car.ini").clone();
     let mass = ci.num("BASIC", "TOTALMASS").filter(|m| *m > 100.0).unwrap_or(1200.0);
+    // the chassis body (module notes): TOTALMASS less the hubs EVO adds on top
+    let hubs = unsprung(c.ini("suspensions.ini"));
+    let body = (mass - hubs).max(mass * 0.5);
+    if body > mass - hubs + 1e-6 {
+        c.note(format!("physics: hub masses {hubs:.0} kg exceed half of TOTALMASS {mass:.0}; the chassis kept at {body:.0} kg"));
+    }
+    c.d.unsprung = mass - body;
+    c.note(format!("physics: totalMass {body:.1} kg: TOTALMASS {mass:.1} less {:.1} kg of hubs, which EVO adds as their own bodies (AC1 counts them in TOTALMASS)", mass - body));
     let fuel = ci.num("FUEL", "FUEL").filter(|v| *v > 0.0).unwrap_or(30.0);
     let max_fuel = ci.num("FUEL", "MAX_FUEL").filter(|v| *v > 0.0).unwrap_or(fuel.max(50.0));
     let cg = c.ini("suspensions.ini").num("BASIC", "CG_LOCATION").filter(|v| *v > 0.05 && *v < 0.95).unwrap_or(0.5);
@@ -58,7 +93,7 @@ pub fn general(c: &mut Ctx) -> Result<()> {
     let tank = ac1_v3(&ci, "FUELTANK", "POSITION").unwrap_or([0.0, -0.1, -1.0]);
     let cog = c.frame.cog;
     let g = at(&mut c.cd, &[1])?;
-    f(g, 1, mass);
+    f(g, 1, body);
     pbx::set_v3(g, 4, tank);
     f(g, 5, c.d.fuel);
     f(g, 6, max_fuel);
@@ -568,6 +603,28 @@ mod tests {
         assert_eq!(default_level(&[0.12], None), 1);
         // stock: 2 levels -> 1, 7 -> 3 (992 GT3 RS), 10 -> 3 (M2), 12 -> 4
         assert_eq!([2, 7, 10, 12].map(fleet_default), [1, 3, 3, 4]);
+    }
+
+    #[test]
+    fn unsprung_is_what_ac1_counts_in_totalmass() {
+        use crate::ac1::ini::parse;
+        // La Shush Taipan: double wishbones, 19 / 28.5 kg hubs
+        let dwb = parse("[FRONT]
+TYPE=DWB
+HUB_MASS=19
+[REAR]
+TYPE=DWB
+HUB_MASS=28.5
+");
+        assert!((super::unsprung(&dwb) - 95.0).abs() < 1e-9);
+        // a solid rear axle counts once; absent HUB_MASS is the suspension stage's 40 kg
+        let axle = parse("[FRONT]
+TYPE=STRUT
+[REAR]
+TYPE=AXLE
+HUB_MASS=90
+");
+        assert!((super::unsprung(&axle) - (80.0 + 90.0)).abs() < 1e-9);
     }
 
     #[test]

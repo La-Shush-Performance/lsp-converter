@@ -172,7 +172,12 @@ fn acc(g: f64, slip: f64) -> Val {
 }
 
 pub fn write(c: &mut Ctx) -> Result<f64> {
-    let d = c.d.clone();
+    // the models were fitted on stock CarData (stats::derive), whose
+    // totalMass is the chassis without its hubs: take the converted car's the
+    // same way (chassis.rs)
+    let mut d = c.d.clone();
+    d.mass -= d.unsprung;
+    d.mass_static -= d.unsprung;
     let (pi, h, run) = perf_indicator(&d);
     let Some(path) = c.cd.str(29) else {
         c.note("physics: CarData names no .aicardata; AI hints not written");

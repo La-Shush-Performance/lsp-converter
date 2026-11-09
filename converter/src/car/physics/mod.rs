@@ -53,6 +53,10 @@ pub struct Derived {
     /// TOTALMASS (driver, no fuel) and with the default fuel
     pub mass: f64,
     pub mass_static: f64,
+    /// of `mass`, the unsprung part AC1 counts in TOTALMASS (hubs; an axle
+    /// once): CarData's totalMass is `mass - unsprung`, EVO adds the hubs as
+    /// their own bodies (chassis.rs)
+    pub unsprung: f64,
     pub fuel: f64,
     pub max_fuel: f64,
     /// front weight share 0..1
