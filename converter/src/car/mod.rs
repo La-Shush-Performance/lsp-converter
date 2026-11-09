@@ -270,15 +270,16 @@ fn functions(files: &mut Files, id: &str, stem: &str, car: &Car, k: &crate::ac1:
              lamp_plan: &lights::LampPlan, led_plan: &leds::LedPlan, disp_plan: &display::DisplayPlan) -> Result<Vec<String>> {
     let mut notes = Vec::new();
     let popups = anim.clips.iter().any(|c| c.slots.contains(&119));
-    notes.extend(lights::write(files, id, stem, plan, insts, lamp_plan, written, popups)?);
-    notes.extend(leds::write(files, id, plan, insts, led_plan, written)?);
     let body = mesh_bounds(files, &format!("content\\cars\\{id}\\meshes\\{stem}_exterior.mesh"));
     let cams = cameras::eye(car, f, body);
+    notes.extend(lights::write(files, id, stem, plan, insts, lamp_plan, written, popups, cams.eye)?);
+    notes.extend(leds::write(files, id, plan, insts, led_plan, written)?);
     notes.extend(cameras::write(files, id, car, f, &cams, body)?);
     notes.extend(display::write(files, id, stem, disp_plan, cams.eye)?);
     let (outlets, tier, n) = exhaust::outlets(car, f, k, insts);
     notes.extend(n);
     notes.extend(exhaust::write(files, id, car, &outlets, tier, led_plan.limiter as f64)?);
+    notes.extend(exhaust::glow(files, id, car, k, plan, insts, written)?);
     notes.extend(shadow(files, id, car, f, body)?);
     Ok(notes)
 }

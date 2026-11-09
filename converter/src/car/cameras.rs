@@ -16,6 +16,8 @@
 //!   the bones on the AC1 mirror meshes), offsets zero on stock.
 //! - `cockpit_probe_transform` (f17), `rear_camera` (f24), `showroom_camera`
 //!   (f32): see `write`.
+//! - `driving_side` (f37): right-hand and centre-seat cars only, from the
+//!   eye's side (`driving_side`).
 //!
 //! # Measured on the 71 stock cars (body = the exterior mesh bounds)
 //!
@@ -224,6 +226,15 @@ fn camera(tmpl: Option<&Msg>, name: &str, pos: [f64; 3], rot: [f32; 3], fov: Opt
     // field order as stock: transform, data
     c.fields.sort_by_key(|f| f.num);
     c
+}
+
+/// The actor's DrivingSide from the eye's x (EVO space, +x = the car's
+/// left): LHS 0 beyond +0.1 m, RHS 1 beyond -0.1 m, Centre 2 between. On
+/// stock this gives the side of 70 of 71 actors (RHS nsx_r, supra_mkiv,
+/// mini_jcs_1990, ae86, caterham_academy, rx7_fd; Centre f2004, sf_25,
+/// alpine_a290_b); the 240Z Fairlady says Centre with its eye at +0.35.
+pub fn driving_side(eye_x: f64) -> u64 {
+    if eye_x > 0.1 { 0 } else if eye_x < -0.1 { 1 } else { 2 }
 }
 
 fn insert_all(car: &mut Msg, num: u32, items: Vec<Msg>) {
@@ -482,6 +493,15 @@ pub fn write(files: &mut Files, id: &str, car: &Car, f: &Frame, c: &Cams, body: 
         notes.push("cameras: mirror VR yaw mirrored for the other driving side".into());
     }
     insert_all(a, 23, mirrors);
+    // driving side (f37 DrivingSide: LHS 0, left out like stock / RHS 1 /
+    // Centre 2) from the eye's side
+    let side = driving_side(c.eye[0]);
+    a.remove(37);
+    if side != 0 {
+        let at = a.fields.iter().position(|x| x.num > 37).unwrap_or(a.fields.len());
+        a.fields.insert(at, Field { num: 37, val: Val::Varint(side) });
+        notes.push(format!("cameras: driving side {}", if side == 1 { "right" } else { "centre" }));
+    }
     // rear-view camera (the mirror render on cars without mirror meshes):
     // stock y 0.8, z tail - 0.1
     let mut rc = a.sub(24).unwrap_or_default();
@@ -497,6 +517,14 @@ pub fn write(files: &mut Files, id: &str, car: &Car, f: &Frame, c: &Cams, body: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn side_from_eye() {
+        // stock cockpit eyes: mx5_na (LHD), rx7_fd (RHD), f2004 (centre)
+        assert_eq!(driving_side(0.35), 0);
+        assert_eq!(driving_side(-0.398), 1);
+        assert_eq!(driving_side(0.0), 2);
+    }
 
     #[test]
     fn eye_in_cabin() {

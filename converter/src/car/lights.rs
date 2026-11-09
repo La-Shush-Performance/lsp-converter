@@ -21,7 +21,9 @@
 //!   reflector / glass / emitter intensity, blinker}}, plus a shared stage
 //!   (brake, reverse, indicators, hazards, rain light) and named blinkers.
 //! - The actor's physical lights (CarActorData.lights): lamps that throw
-//!   light, at their position with the functions they project.
+//!   light, at their position with the functions they project, and the
+//!   cabin light (location 5, on 69 of 72 stock actors): the donor's, moved
+//!   over the driver's eye.
 //!
 //! # From AC1
 //!
@@ -448,6 +450,12 @@ fn masks(s: &BTreeSet<Func>) -> ([u8; 4], [u8; 4]) {
 
 /// Stock ks_mazda_mx5_na colours per lamp function (linear RGB).
 const WARM: [f32; 3] = [0.888, 0.707, 0.434];
+
+/// The cabin light's height over the driver's eye (cockpit camera), on the
+/// centreline at the eye's z: measured on the 69 stock actors with one,
+/// median +0.22 m (p10 0.16, p90 0.26), z median 2 cm from the eye, x 0 on
+/// every one.
+const COCKPIT_LIGHT_ABOVE_EYE: f64 = 0.22;
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const AMBER: [f32; 3] = [1.0, 0.246, 0.0];
 
@@ -463,7 +471,7 @@ fn colour_props(m: &mut Msg) {
 /// backlight materials, the lighting system and the physical lights.
 #[allow(clippy::too_many_arguments)]
 pub fn write(files: &mut Files, id: &str, stem: &str, plan: &Plan, insts: &[Inst], lp: &LampPlan,
-             written: &[(String, Kind, usize, bool, String)], popups: bool) -> Result<Vec<String>> {
+             written: &[(String, Kind, usize, bool, String)], popups: bool, eye: [f64; 3]) -> Result<Vec<String>> {
     let base = format!("content\\cars\\{id}");
     let mut notes = Vec::new();
     // section name -> its function set (from any of its parts' nodes)
@@ -619,6 +627,14 @@ pub fn write(files: &mut Files, id: &str, stem: &str, plan: &Plan, insts: &[Inst
     }
     if let Some(c) = mean(&|p, fs| fs.contains(&Func::Fog) && p[2] < 0.0) {
         lights.push(mk("rear fog", 4, c, rot_rear, &[5], None));
+    }
+    // the cabin light (location 5): the donor's (colour, functions, pitch)
+    // over the driver's eye, where stock puts it
+    if let Some(mut l) = old.iter().find(|l| l.varint(6) == Some(5)).cloned() {
+        let rot = l.sub(3).map(|t| fx::transform_of(&t).1).unwrap_or([-5.0, 0.0, 0.0]);
+        let pos = [0.0, (eye[1] + COCKPIT_LIGHT_ABOVE_EYE) as f32, eye[2] as f32];
+        l.set(3, Val::Msg(fx::transform(pos, rot)));
+        lights.push(l);
     }
     let n_phys = lights.len();
     // stock field order: f2 lights after f1 cameras

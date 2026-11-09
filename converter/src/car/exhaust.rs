@@ -36,6 +36,17 @@
 //!   exhaust meshes (the rearmost points of meshes named exhaust / muffler /
 //!   tailpipe), else the donor's stay where they are with their kind,
 //!   neutralised (no visual backfire).
+//!
+//! # Exhaust heat glow
+//!
+//! `shader_settings` (CarActorData f21) f4 `mechanics_glow_batches` / f5
+//! `mechanics_glow_intensity`: the batches that glow with exhaust heat.
+//! Stock: race cars only (18 GT2 / GT3 / GT4 / Cup actors name their
+//! EXT_MECH_EXHAUST* and EXT_MECH_BASE batches, intensity 0.2 on all 21
+//! that set it); no road car has any. Ours (`glow`): on race cars
+//! (`race_car`), the exterior plain-material batches whose AC1 material is
+//! named like an exhaust (`EXHAUST_KEYS`), or all of whose meshes are, at
+//! the stock 0.2; the batches are UberVehicleMaterial like stock exhausts.
 
 use anyhow::Result;
 
@@ -45,6 +56,18 @@ use crate::car::fx;
 use crate::car::geometry::Inst;
 use crate::files::Files;
 use crate::io::pb::{Field, Msg, Val};
+
+/// Mesh / material names that mean an exhaust part (the outlet tips and the
+/// heat glow).
+const EXHAUST_KEYS: [&str; 6] = ["exhaust", "muffler", "tailpipe", "tail_pipe", "scarico", "silencer"];
+
+/// Stock `mechanics_glow_intensity` (21 of 21 actors that set it).
+const GLOW_INTENSITY: f32 = 0.2;
+
+fn exhaust_named(s: &str) -> bool {
+    let s = s.to_lowercase();
+    EXHAUST_KEYS.iter().any(|k| s.contains(k))
+}
 
 pub struct Outlet {
     pub pos: [f64; 3],
@@ -111,11 +134,9 @@ pub fn outlets(car: &Car, f: &Frame, k: &crate::ac1::kn5::Kn5, insts: &[Inst]) -
     if out.is_empty() {
         // the tips of the exhaust meshes: per side, the rearmost vertex
         let mut tips: Vec<[f64; 3]> = Vec::new();
-        let keys = ["exhaust", "muffler", "tailpipe", "tail_pipe", "scarico", "silencer"];
         for i in insts.iter().filter(|i| !i.cockpit) {
-            let n = i.node.to_lowercase();
-            let mat = k.materials.get(i.material).map(|m| m.name.to_lowercase()).unwrap_or_default();
-            if !keys.iter().any(|k| n.contains(k) || mat.contains(k)) {
+            let mat = k.materials.get(i.material).map(|m| m.name.as_str()).unwrap_or_default();
+            if !exhaust_named(&i.node) && !exhaust_named(mat) {
                 continue;
             }
             // per side of the car: one mesh may hold both pipes
@@ -261,4 +282,38 @@ pub fn write(files: &mut Files, id: &str, car: &Car, outlets: &[Outlet], tier: u
     notes.push(format!("exhaust: {} emitter(s) of kind {kind} (Exhaust_{}), flame tier {tier}, backfire at {:.0} / {:.0} / {:.0} rpm, visual {:?}",
         outlets.len().max(0), kind - 1, lim * 0.83, lim * 0.62, lim * 0.45, visual));
     Ok(notes)
+}
+
+/// The exhaust heat glow (module notes): race cars' exhaust batches in the
+/// actor's shader settings. Written batches only (`written`: section name,
+/// kind, kn5 material, interior, material path).
+pub fn glow(files: &mut Files, id: &str, car: &Car, k: &crate::ac1::kn5::Kn5, plan: &crate::car::body::Plan, insts: &[Inst],
+            written: &[(String, crate::car::materials::Kind, usize, bool, String)]) -> Result<Vec<String>> {
+    if !race_car(car) {
+        return Ok(vec![]);
+    }
+    let ap = format!("content\\cars\\{id}\\{id}.actor");
+    let Some(mut actor) = files.get(&ap).and_then(|b| Msg::parse(b).ok()) else { return Ok(vec![]) };
+    let mut batches: Vec<String> = plan.sections.iter()
+        .filter(|s| !s.interior && s.kind == crate::car::materials::Kind::Generic)
+        .filter(|s| k.materials.get(s.material).is_some_and(|m| exhaust_named(&m.name))
+            || (!s.parts.is_empty() && s.parts.iter().all(|(ii, _)| insts.get(*ii).is_some_and(|i| exhaust_named(&i.node)))))
+        .filter(|s| written.iter().any(|w| w.0 == s.name && !w.3))
+        .map(|s| s.name.clone())
+        .collect();
+    batches.dedup();
+    if batches.is_empty() {
+        return Ok(vec!["exhaust: race car with no exhaust-named batch - no heat glow".into()]);
+    }
+    let a = actor.msg_mut(103)?;
+    let mut sh = a.sub(21).unwrap_or_default();
+    sh.remove(4);
+    for b in &batches {
+        sh.push(4, Val::Bytes(b.as_bytes().to_vec()));
+    }
+    sh.set_f32(5, GLOW_INTENSITY);
+    sh.fields.sort_by_key(|f| f.num);
+    a.set(21, Val::Msg(sh));
+    files.put(&ap, actor.encode());
+    Ok(vec![format!("exhaust: heat glow on {} ({GLOW_INTENSITY})", batches.join(", "))])
 }
