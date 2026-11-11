@@ -72,6 +72,7 @@ fn category(name: &str) -> u8 {
 /// - classes for race cars only (the Race / Drift profile detection), from
 ///   the tags, class and name: Kunos tags its road Sport quattro without
 ///   "rally" and the road Exige V6 Cup without "cup", though AC1 tags them;
+///   formula and open wheel only for a single-seater (`race_classes`);
 /// - the induction (a ui tag "compressor" / "supercharger", else engine.ini
 ///   turbos or a "turbo" tag, else naturally aspirated).
 ///
@@ -113,7 +114,29 @@ pub fn sub_categories(car: &Car) -> Vec<u8> {
     if profile == profile::Profile::Drift {
         out.push(category("drift"));
     }
-    let race = profile == profile::Profile::Race;
+    if profile == profile::Profile::Race {
+        let eye_x = car.ini("car.ini").nums("GRAPHICS", "DRIVEREYES").first().copied();
+        out.extend(race_classes(&words, eye_x));
+    }
+    let turbo = car.ini("engine.ini").with_prefix("TURBO_").next().is_some() || has(r"\bturbo");
+    out.push(category(if has(r"\b(compressor|supercharg)") { "supercharger" } else if turbo { "turbo" } else { "na" }));
+    out.dedup();
+    out
+}
+
+/// A race car's classes from its tags, class and name (`words`, lower case).
+/// OURS: formula and open wheel only for a single-seater, the driver on the
+/// centreline (car.ini DRIVEREYES x within 0.1 m: EVO's Centre driving side,
+/// `cameras::driving_side`; stock f2004 and sf_25 sit at 0). The words alone
+/// listed the Formula Truck Volvo FH (tag "Formula Truck", seat at x 0.585)
+/// under Formula and Open wheel. The La Shush Taipan (tag "Formula", x 0.002)
+/// keeps them. Words still decide among single-seaters: the McLaren F1 GTR
+/// (centre seat, "F1") is listed, and an open-wheeler whose words never say
+/// so (Lotus 49, Tatuus FA01) is not.
+fn race_classes(words: &str, eye_x: Option<f64>) -> Vec<u8> {
+    let has = |re: &str| regex::Regex::new(re).map(|r| r.is_match(words)).unwrap_or(false);
+    let single_seater = eye_x.is_some_and(|x| crate::car::cameras::driving_side(x) == 2);
+    let mut out = Vec::new();
     for (re, names) in [
         (r"\brally", &["rally"][..]),
         (r"\bgt2\b", &["gt2"][..]),
@@ -127,13 +150,10 @@ pub fn sub_categories(car: &Car) -> Vec<u8> {
         (r"\bdrag\b", &["drag"][..]),
         (r"hill\s*climb", &["hillclimb"][..]),
     ] {
-        if race && has(re) {
+        if has(re) && (single_seater || !names.contains(&"formula")) {
             out.extend(names.iter().map(|n| category(n)));
         }
     }
-    let turbo = car.ini("engine.ini").with_prefix("TURBO_").next().is_some() || has(r"\bturbo");
-    out.push(category(if has(r"\b(compressor|supercharg)") { "supercharger" } else if turbo { "turbo" } else { "na" }));
-    out.dedup();
     out
 }
 
@@ -478,6 +498,20 @@ mod tests {
         assert_eq!(description_paragraphs(&d), vec!["First \"one\" line".to_string(), "Second & last.".to_string()]);
         assert_eq!(json_string(t, "bhp").as_deref(), Some("740bhp"));
         assert!(json_string(t, "class").is_none());
+    }
+
+    #[test]
+    fn formula_needs_a_single_seater() {
+        let names = |v: Vec<u8>| v.into_iter().filter_map(category_name).collect::<Vec<_>>();
+        // the Formula Truck Volvo FH: its tags, class and name, the seat on the left
+        let truck = "rwd truck race diesel formula truck turbo shifter race volvo fh - formula truck";
+        assert!(names(race_classes(truck, Some(0.585))).is_empty());
+        // the La Shush Taipan: tag "Formula", the driver on the centreline
+        let taipan = "sequential race v8 turbo formula taipan la shush performance race la shush taipan";
+        assert_eq!(names(race_classes(taipan, Some(0.0018))), ["formula", "open_wheel"]);
+        // no DRIVEREYES: not known to be a single-seater; other classes keep to the words
+        assert!(names(race_classes(taipan, None)).is_empty());
+        assert_eq!(names(race_classes("gt3 race", Some(0.4))), ["gt3"]);
     }
 
     #[test]
