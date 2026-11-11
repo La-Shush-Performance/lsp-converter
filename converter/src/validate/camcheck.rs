@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::car::cameras::{enclosed, mesh_tris};
+use crate::car::cameras::{chase_scale, enclosed, mesh_tris};
 use crate::car::fx;
 use crate::io::pb::Msg;
 
@@ -69,14 +69,12 @@ pub fn check(files: &BTreeMap<String, Vec<u8>>, id: &str) -> Found {
         }
     }
     // chase: behind and above, at stock distances
-    let tail = lo[2];
-    for (n, ys, zs) in [("NearChase", (1.4, 2.2), (-3.5, -2.3)), ("FarChase", (2.0, 2.9), (-5.0, -3.6))] {
+    for n in ["NearChase", "FarChase"] {
         if let Some((_, p, _)) = find(n) {
-            let dz = p[2] - tail;
-            if dz >= 0.0 || p[1] <= hi[1] {
-                out.errors.push(format!("cameras: {n} {} is not behind and above the car (tail z {tail:.2}, top {:.2})", p3(*p), hi[1]));
-            } else if !(ys.0..=ys.1).contains(&p[1]) || !(zs.0..=zs.1).contains(&dz) {
-                out.warnings.push(format!("cameras: {n} at y {:.2}, {:.2} m behind the tail (stock y {:.1}..{:.1}, {:.1}..{:.1} m)", p[1], -dz, ys.0, ys.1, -zs.1, -zs.0));
+            match chase_finding(n, *p, lo, hi) {
+                Some((true, e)) => out.errors.push(e),
+                Some((false, w)) => out.warnings.push(w),
+                None => {}
             }
         }
     }
@@ -106,4 +104,77 @@ pub fn check(files: &BTreeMap<String, Vec<u8>>, id: &str) -> Found {
         }
     }
     out
+}
+
+/// One chase camera (`NearChase` / `FarChase`) against the stock rule: behind
+/// the tail and above the body top, else an error (true); at the stock
+/// height and distance behind the tail, else a warning (false). The stock
+/// ranges scale with a body bigger than any stock car's, as the converter's
+/// chase rig does (`cameras::chase_scale`; 1 on every stock-sized car).
+pub fn chase_finding(n: &str, p: [f64; 3], lo: [f64; 3], hi: [f64; 3]) -> Option<(bool, String)> {
+    let p3 = |p: [f64; 3]| format!("({:.2}, {:.2}, {:.2})", p[0], p[1], p[2]);
+    let tail = lo[2];
+    let dz = p[2] - tail;
+    if dz >= 0.0 || p[1] <= hi[1] {
+        return Some((true, format!("cameras: {n} {} is not behind and above the car (tail z {tail:.2}, top {:.2})", p3(p), hi[1])));
+    }
+    let (ys, zs) = if n.eq_ignore_ascii_case("NearChase") { ((1.4, 2.2), (-3.5, -2.3)) } else { ((2.0, 2.9), (-5.0, -3.6)) };
+    let s = chase_scale(lo, hi);
+    let (ys, zs) = ((ys.0 * s, ys.1 * s), (zs.0 * s, zs.1 * s));
+    if !(ys.0..=ys.1).contains(&p[1]) || !(zs.0..=zs.1).contains(&dz) {
+        let scaled = if s > 1.0 { format!("; scaled x {s:.2} with the body") } else { String::new() };
+        return Some((false, format!("cameras: {n} at y {:.2}, {:.2} m behind the tail (stock y {:.1}..{:.1}, {:.1}..{:.1} m{scaled})", p[1], -dz, ys.0, ys.1, -zs.1, -zs.0)));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::car::cameras::{bonnet_misplaced, chase};
+
+    /// The Formula Truck Volvo FH as converted (8 Nov build): exterior box,
+    /// cockpit eye and the check result of a user's conversion.
+    const TRUCK_LO: [f64; 3] = [-1.25, 0.10, -2.46];
+    const TRUCK_HI: [f64; 3] = [1.25, 2.59, 2.77];
+    const TRUCK_EYE: [f64; 3] = [0.582, 1.901, 1.221];
+
+    #[test]
+    fn truck_chase_cameras_pass() {
+        // the old fixed rule: 2.0 m, below the 2.59 m roof - the error the user got
+        assert!(matches!(chase_finding("NearChase", [0.0, 2.0, -5.239], TRUCK_LO, TRUCK_HI), Some((true, _))));
+        let (near, far, s) = chase(TRUCK_EYE, TRUCK_LO, TRUCK_HI);
+        assert!((s - 2.59 / 1.68).abs() < 1e-9, "{s}");
+        // above the roof by about the stock median (0.50), behind the tail
+        assert!(near[1] - TRUCK_HI[1] > 0.4 && near[1] - TRUCK_HI[1] < 0.6, "{near:?}");
+        assert!(far[1] > near[1] && far[2] < near[2] && near[2] < TRUCK_LO[2]);
+        assert_eq!(chase_finding("NearChase", near, TRUCK_LO, TRUCK_HI), None);
+        assert_eq!(chase_finding("FarChase", far, TRUCK_LO, TRUCK_HI), None);
+    }
+
+    #[test]
+    fn stock_sized_chase_is_unchanged() {
+        // mx5_na's box and eye: scale 1, the stock positions, no finding
+        let (lo, hi) = ([-0.91, 0.02, -1.972], [0.91, 1.195, 1.979]);
+        let (near, far, s) = chase([0.35, 0.951, -0.336], lo, hi);
+        assert_eq!(s, 1.0);
+        assert!((near[1] - 1.8).abs() < 1e-9 && (near[2] - (lo[2] - 2.78)).abs() < 1e-9);
+        assert!((far[1] - 2.5).abs() < 1e-9 && (far[2] - (lo[2] - 4.22)).abs() < 1e-9);
+        assert_eq!(chase_finding("NearChase", near, lo, hi), None);
+        assert_eq!(chase_finding("FarChase", far, lo, hi), None);
+        // the stock rule's warning text is kept for stock-sized cars
+        let w = chase_finding("NearChase", [0.0, 2.4, lo[2] - 2.78], lo, hi).unwrap();
+        assert!(!w.0 && w.1.ends_with("(stock y 1.4..2.2, 2.3..3.5 m)"), "{}", w.1);
+    }
+
+    #[test]
+    fn truck_bonnet_camera_pos_is_no_bonnet_camera() {
+        // the user's log: BONNET_CAMERA_POS lands at (0, 4.875, -7.285)
+        assert_eq!(bonnet_misplaced([0.0, 4.875, -7.285], TRUCK_EYE, TRUCK_HI), Some("behind the driver's eye"));
+        assert_eq!(bonnet_misplaced([0.0, 4.875, 2.0], TRUCK_EYE, TRUCK_HI), Some("high above the body"));
+        assert_eq!(bonnet_misplaced([0.0, 2.0, 2.6], TRUCK_EYE, TRUCK_HI), Some("in or ahead of the nose"));
+        // over the front of the cab; f2004's T-cam 0.36 m behind its eye
+        assert_eq!(bonnet_misplaced([0.0, 2.05, 2.2], TRUCK_EYE, TRUCK_HI), None);
+        assert_eq!(bonnet_misplaced([0.0, 1.08, -0.471], [0.0, 0.681, -0.111], [0.87, 1.071, 2.303]), None);
+    }
 }

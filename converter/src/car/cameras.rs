@@ -23,8 +23,9 @@
 //!
 //! | camera | stock rule (median, p10..p90) |
 //! |---|---|
-//! | NearChase | y 1.80 (1.80..1.85), z tail - 2.78 (-3.00..-2.69), pitch -5 |
-//! | FarChase | y 2.50, z tail - 4.22 (-4.37..-4.09), pitch -5 |
+//! | NearChase | y 1.80 (1.80..1.85), z tail - 2.78 (-3.00..-2.69), pitch -5; 0.50 m over the body top (0.30..0.66, least 0.12) |
+//! | FarChase | y 2.50, z tail - 4.22 (-4.37..-4.09), pitch -5; 1.20 m over the body top (0.95..1.36) |
+//! | body (exterior box) | top 1.29 m (1.14..1.55, at most 1.68), length 4.40 m (3.80..4.82, at most 5.07) |
 //! | Bumper | y = cockpit y (0 off on 64 of 71), z nose - 0.06, pitch = cockpit pitch |
 //! | Bonnet | x 0, 0.15 behind the windscreen base (cowl), median; 0.14 over the glass (0.07..0.21), pitch -5.7 |
 //! | Dash | eye + (0, 0.007, 0.196) |
@@ -54,7 +55,12 @@
 //! - `ON_BOARD_PITCH_ANGLE` does not carry over: twins with -5.4 (ae86,
 //!   supra, sport_quattro, 190) have -1.8..+0.2 on stock. OURS: kept inside
 //!   the stock p10..p90 range (-1.7..+0.6), else the stock median -0.2.
-//! - AC1 has no per-car chase positions: the stock rule above is used.
+//! - AC1 has no per-car chase positions: the stock rule above is used, and
+//!   for a body beyond the stock envelope the whole chase rig scales with it
+//!   (`chase_scale`). Measured by `examples/camsurvey.rs` (69 stock cars).
+//! - A BONNET_CAMERA_POS that is not over the front of the car (Formula
+//!   Truck Volvo FH: 7.3 m behind the centre and 4.9 m up, a chase view) is
+//!   no bonnet camera: the stock rule, and its pitch goes with it.
 //! - FOV: cameras.ini FOV (vertical degrees in AC1) is kept; stock onboard
 //!   cameras use 55..60, AC1's are 60.
 
@@ -311,9 +317,90 @@ pub const BONNET_BEHIND_COWL: f64 = 0.30;
 pub const BONNET_CLEARANCE: f64 = 0.15;
 /// Stock bonnet pitch: median -5.7, p10..p90 -10..-2.4.
 pub const BONNET_PITCH: f32 = -5.7;
+/// The steepest stock bonnet pitch is f2004's -14.6; an AC1
+/// BONNET_CAMERA_PITCH below this is replaced by the stock median (no car
+/// in the AC1 library goes below -14; the Formula Truck Volvo FH has -20).
+pub const BONNET_PITCH_MIN: f32 = -15.0;
+
+/// Where the check (validate::camcheck) wants a bonnet camera: from 0.4 m
+/// behind the eye (f2004's stock bonnet is 0.36 m behind it) to the bumper
+/// at the nose. Stock bonnets sit at most 0.25 m over the body top (the F40
+/// LM's).
+pub const BONNET_BEHIND_EYE_MAX: f64 = 0.4;
+pub const BONNET_OVER_TOP_MAX: f64 = 0.5;
+
+/// Why an AC1 BONNET_CAMERA_POS (EVO space) is no bonnet camera, or None:
+/// over the front of the car means from `BONNET_BEHIND_EYE_MAX` behind the
+/// eye to 0.3 m short of the nose, and at most `BONNET_OVER_TOP_MAX` over
+/// the body. honda_s2000_a_spec has bonnet and bumper swapped (ahead of the
+/// nose); the Formula Truck Volvo FH's (0, 4.88, -7.29) is a chase view
+/// behind and above a 2.59 m truck.
+pub fn bonnet_misplaced(p: [f64; 3], eye: [f64; 3], hi: [f64; 3]) -> Option<&'static str> {
+    if p[2] > hi[2] - 0.3 {
+        Some("in or ahead of the nose")
+    } else if p[2] < eye[2] - BONNET_BEHIND_EYE_MAX {
+        Some("behind the driver's eye")
+    } else if p[1] > hi[1] + BONNET_OVER_TOP_MAX {
+        Some("high above the body")
+    } else {
+        None
+    }
+}
 
 fn stock_bonnet_fallback(eye: [f64; 3], hi: [f64; 3]) -> [f64; 3] {
     [0.0, eye[1] + 0.14, (eye[2] + 0.94).min(hi[2] - 0.6)]
+}
+
+/// OURS: the stock fallback bonnet camera, out of the shell. eye + (0,
+/// 0.14, 0.94) is over the bonnet of a car; on a cab-over truck the same
+/// point is inside the cab, behind the near-upright windscreen (6 of 6 rays
+/// blocked: a check-car error). The camera then moves forward in 5 cm steps
+/// to the first point with at most 2 rays blocked (stock external cameras
+/// 0..2), in front of the glass, no further than the bumper; failing that
+/// it goes `BONNET_CLEARANCE` over the body at the fallback point.
+pub fn clear_bonnet(tris: &[[[f32; 3]; 3]], p: [f64; 3], hi: [f64; 3]) -> ([f64; 3], Option<&'static str>) {
+    if tris.is_empty() || enclosed(tris, p) < 4 {
+        return (p, None);
+    }
+    let mut q = p;
+    while q[2] + 0.05 <= hi[2] - 0.06 {
+        q[2] += 0.05;
+        if enclosed(tris, q) <= 2 {
+            return (q, Some("moved forward out of the body"));
+        }
+    }
+    match surface_y(tris, 0.0, p[2]).map(|s| [0.0, s + BONNET_CLEARANCE, p[2]]).filter(|o| enclosed(tris, *o) < 4) {
+        Some(o) => (o, Some("lifted over the body")),
+        None => (p, None),
+    }
+}
+
+/// OURS: the chase rig's scale. 1 for a body inside the stock envelope (top
+/// at most 1.68 m, length 5.07 m: ks_audi_r8_lms_gt3_evo_2, ks_ford_mustang_gt3),
+/// so those cars keep the stock rule; beyond it the larger of top / 1.68 and
+/// length / 5.07, capped at 3. Heights and distances scale together and the
+/// pitch stays -5, so a truck is framed as a stock car is. The Formula Truck
+/// Volvo FH (top 2.59, 5.2 m long) gets 1.54: near chase 0.49 m over its roof
+/// (stock median 0.50) where the fixed 2.0 m height put it 0.59 m below.
+pub fn chase_scale(lo: [f64; 3], hi: [f64; 3]) -> f64 {
+    (hi[1] / STOCK_TOP_MAX).max((hi[2] - lo[2]) / STOCK_LENGTH_MAX).clamp(1.0, 3.0)
+}
+
+/// The largest stock body box (exterior mesh bounds): top and length.
+pub const STOCK_TOP_MAX: f64 = 1.68;
+pub const STOCK_LENGTH_MAX: f64 = 5.07;
+/// Stock chase distances behind the tail (medians).
+pub const NEAR_BEHIND_TAIL: f64 = 2.78;
+pub const FAR_BEHIND_TAIL: f64 = 4.22;
+
+/// The near and far chase cameras (EVO space) and the rig's scale. Stock
+/// heights 1.80 / 2.50 (1.96 / 2.67 on the tallest cars: OURS eye + 0.72,
+/// clamped 1.8 .. 2.0, the far one 0.7 higher), at the stock distances
+/// behind the tail; all of it times `chase_scale`.
+pub fn chase(eye: [f64; 3], lo: [f64; 3], hi: [f64; 3]) -> ([f64; 3], [f64; 3], f64) {
+    let s = chase_scale(lo, hi);
+    let ny = (eye[1] + 0.72).clamp(1.8, 2.0);
+    ([0.0, ny * s, lo[2] - NEAR_BEHIND_TAIL * s], [0.0, (ny + 0.7) * s, lo[2] - FAR_BEHIND_TAIL * s], s)
 }
 
 pub fn drivable(car: &Car, f: &Frame, c: &Cams, body: ([f32; 3], [f32; 3]), tris: &[[[f32; 3]; 3]], notes: &mut Vec<String>) -> Drivable {
@@ -330,7 +417,10 @@ pub fn drivable(car: &Car, f: &Frame, c: &Cams, body: ([f32; 3], [f32; 3]), tris
     // sits lower and further forward, on the bonnet itself (ks_mazda_miata
     // (0, 0.92, 0.83), 0.08 m over the panel), so it is only the fallback
     let ac1_pitch = ci.num("GRAPHICS", "BONNET_CAMERA_PITCH").map(|p| p as f32);
-    let bon_pitch = ac1_pitch.filter(|p| *p < -2.0).unwrap_or(BONNET_PITCH);
+    let mut bon_pitch = ac1_pitch.filter(|p| (BONNET_PITCH_MIN..-2.0).contains(p)).unwrap_or(BONNET_PITCH);
+    if let Some(p) = ac1_pitch.filter(|p| *p < BONNET_PITCH_MIN) {
+        notes.push(format!("cameras: BONNET_CAMERA_PITCH {p:.1} is steeper than any stock bonnet camera (f2004 -14.6) - {BONNET_PITCH:.1} (stock median)"));
+    }
     let ws = if tris.is_empty() { None } else { windscreen(tris, c.eye[2], hi[2]) };
     let over_glass = ws.filter(|w| w.1 > c.eye[2] + 0.2).map(|(_, base)| {
         let z = (base - BONNET_BEHIND_COWL).max(c.eye[2] + 0.3);
@@ -347,17 +437,35 @@ pub fn drivable(car: &Car, f: &Frame, c: &Cams, body: ([f32; 3], [f32; 3]), tris
             if let Some(g) = found {
                 notes.push(format!("cameras: over the windscreen ({:.2}, {:.2}, {:.2}) is inside the body (an open cockpit) - bonnet camera from BONNET_CAMERA_POS", g[0], g[1], g[2]));
             }
-            let mut b = v3(&ci.nums("GRAPHICS", "BONNET_CAMERA_POS")).map(cog).unwrap_or_else(|| stock_bonnet_fallback(c.eye, hi));
-            b[0] = 0.0;
-            // a mod with bonnet and bumper swapped (honda_s2000_a_spec), or one
-            // buried in the body
-            if b[2] > hi[2] - 0.3 || buried(b) {
-                let s = stock_bonnet_fallback(c.eye, hi);
-                notes.push(format!("cameras: BONNET_CAMERA_POS ({:.2}, {:.2}, {:.2}) is in or ahead of the body - stock rule", b[0], b[1], b[2]));
-                b = s;
-            }
+            let ac1 = v3(&ci.nums("GRAPHICS", "BONNET_CAMERA_POS")).map(|p| {
+                let mut b = cog(p);
+                b[0] = 0.0;
+                b
+            });
+            // a mod with bonnet and bumper swapped (honda_s2000_a_spec), one
+            // buried in the body, or one that is no bonnet camera at all
+            // (`bonnet_misplaced`: then its pitch is no bonnet pitch either)
+            let why = ac1.and_then(|b| bonnet_misplaced(b, c.eye, hi).or_else(|| buried(b).then_some("inside the body")));
+            let b = match (ac1, why) {
+                (Some(b), None) => b,
+                (b, why) => {
+                    let (s, moved) = clear_bonnet(tris, stock_bonnet_fallback(c.eye, hi), hi);
+                    if let (Some(b), Some(why)) = (b, why) {
+                        // not over the front at all: the AC1 pitch belonged to that view
+                        let drop_pitch = !matches!(why, "in or ahead of the nose" | "inside the body") && bon_pitch != BONNET_PITCH;
+                        notes.push(format!("cameras: BONNET_CAMERA_POS ({:.2}, {:.2}, {:.2}) is {why} - stock rule{}", b[0], b[1], b[2], if drop_pitch { ", stock pitch" } else { "" }));
+                        if drop_pitch {
+                            bon_pitch = BONNET_PITCH;
+                        }
+                    }
+                    if let Some(m) = moved {
+                        notes.push(format!("cameras: the stock-rule bonnet camera is inside the body - {m} to ({:.2}, {:.2}, {:.2})", s[0], s[1], s[2]));
+                    }
+                    s
+                }
+            };
             if found.is_none() {
-                notes.push("cameras: no windscreen found on the centreline - bonnet camera from BONNET_CAMERA_POS".into());
+                notes.push(format!("cameras: no windscreen found on the centreline - bonnet camera from {}", if why.is_none() && ac1.is_some() { "BONNET_CAMERA_POS" } else { "the stock rule" }));
             }
             b
         }
@@ -367,11 +475,11 @@ pub fn drivable(car: &Car, f: &Frame, c: &Cams, body: ([f32; 3], [f32; 3]), tris
     // agrees in z (ks_mazda_miata nose - 0.064) and sits 8 cm lower than mx5_na
     let bumper = [0.0, c.eye[1], hi[2] - 0.06];
     let bum_pitch = c.pitch;
-    // chase: stock heights 1.80 / 2.50 (1.96 / 2.67 on the tallest cars:
-    // OURS eye + 0.72, clamped), distances from the tail
-    let ny = (c.eye[1] + 0.72).clamp(1.8, 2.0);
-    let near = [0.0, ny, lo[2] - 2.78];
-    let far = [0.0, ny + 0.7, lo[2] - 4.22];
+    // chase: the stock rig, scaled with a body bigger than any stock car's
+    let (near, far, s) = chase(c.eye, lo, hi);
+    if s > 1.0 {
+        notes.push(format!("cameras: the body ({:.2} m tall, {:.2} m long) is past the stock ones (at most {STOCK_TOP_MAX:.2} m tall, {STOCK_LENGTH_MAX:.2} m long) - chase cameras scaled x {s:.2}", hi[1], hi[2] - lo[2]));
+    }
     Drivable { dash: dash_pos, bonnet: (bonnet, bon_pitch), bumper: (bumper, bum_pitch), near, far }
 }
 
@@ -556,5 +664,54 @@ mod tests {
         assert_eq!(enclosed(&t, [0.1, 0.2, -0.3]), 6);
         assert!(enclosed(&t, [0.0, 2.0, 0.0]) <= 1);
         assert_eq!(enclosed(&t, [0.0, 0.0, -5.0]), 0);
+    }
+
+    /// The six faces of an axis-aligned box.
+    fn cuboid(lo: [f32; 3], hi: [f32; 3]) -> Vec<[[f32; 3]; 3]> {
+        let q = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| [[a, b, c], [a, c, d]];
+        let ([x0, y0, z0], [x1, y1, z1]) = (lo, hi);
+        let mut t = Vec::new();
+        for f in [
+            q([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]),
+            q([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]),
+            q([x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]),
+            q([x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]),
+            q([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]),
+            q([x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]),
+        ] {
+            t.extend(f);
+        }
+        t
+    }
+
+    #[test]
+    fn cab_over_bonnet_moves_out_of_the_cab() {
+        // a cab-over truck: the cab a closed box to its upright front at
+        // z 2.6, the bumper below it to the nose at 2.77; the Formula Truck
+        // Volvo FH's eye. The stock fallback (eye + 0.14 up, 0.94 ahead) is
+        // inside the cab: it moves just out in front of the glass.
+        let mut t = cuboid([-1.2, 0.9, -0.5], [1.2, 2.59, 2.6]);
+        t.extend(cuboid([-1.2, 0.3, 2.5], [1.2, 1.0, 2.77]));
+        let hi = [1.2, 2.59, 2.77];
+        let p = stock_bonnet_fallback([0.582, 1.901, 1.221], hi);
+        assert_eq!(enclosed(&t, p), 6);
+        let (q, moved) = clear_bonnet(&t, p, hi);
+        assert_eq!(moved, Some("moved forward out of the body"));
+        assert!(q[2] > 2.6 && q[2] <= 2.71 && q[1] == p[1], "{q:?}");
+        assert!(enclosed(&t, q) <= 2);
+        // a car's fallback over its bonnet stays where it is
+        let car = cuboid([-0.9, 0.2, -2.0], [0.9, 0.7, 2.0]);
+        let p = stock_bonnet_fallback([0.35, 0.95, -0.34], [0.9, 1.2, 2.0]);
+        assert_eq!(clear_bonnet(&car, p, [0.9, 1.2, 2.0]), (p, None));
+    }
+
+    #[test]
+    fn chase_scales_only_beyond_stock() {
+        // the tallest and longest stock boxes keep the stock rig
+        assert_eq!(chase_scale([-1.0, 0.0, -2.232], [1.0, 1.679, 2.367]), 1.0);
+        assert_eq!(chase_scale([-1.0, 0.0, -2.62], [1.0, 1.3, 2.446]), 1.0);
+        // a 10 m bus by its length, a stray mesh capped
+        assert!((chase_scale([-1.2, 0.0, -5.0], [1.2, 3.0, 5.0]) - 10.0 / 5.07).abs() < 1e-9);
+        assert_eq!(chase_scale([-1.0, 0.0, -2.5], [1.0, 25.0, 2.5]), 3.0);
     }
 }
