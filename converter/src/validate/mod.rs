@@ -39,6 +39,7 @@ pub mod batches;
 pub mod limits;
 pub mod rigcheck;
 pub mod camcheck;
+pub mod carpaths;
 pub mod decl;
 pub mod lines;
 
@@ -538,6 +539,18 @@ pub fn car(kspkg: &Path, game: &Game) -> Result<Report> {
     for e in rig.errors {
         r.err(e);
     }
+    // the files EVO's physics loads by path: named, and there (carpaths)
+    {
+        let low: std::collections::HashMap<String, &Vec<u8>> = files.iter().map(|(k, v)| (k.to_lowercase(), v)).collect();
+        let read = |p: &str| low.get(&p.to_lowercase()).map(|v| (*v).clone()).or_else(|| game.read(p));
+        let has = |p: &str| low.contains_key(&p.to_lowercase()) || game.has(p);
+        let own = format!("content\\cars\\{id}\\");
+        if let Some(cd) = crate::car::physics::stats::cardata_of(files.keys().map(|k| k.as_str()).filter(|k| k.to_lowercase().starts_with(&own.to_lowercase()))) {
+            for e in carpaths::check(&cd, &read, &has) {
+                r.err(e);
+            }
+        }
+    }
     let cams = crate::validate::camcheck::check(&files, &id);
     for w in cams.warnings {
         r.warn(w);
@@ -704,6 +717,12 @@ pub fn stock_car(id: &str, game: &Game) -> Report {
     let own = game.paths_with_prefix(&format!("content\\cars\\{id}\\"));
     r.files = own.len();
     batches::check(id, &own, &|p: &str| game.read(p), &mut r);
+    // the CarData path rules' calibration: every stock car passes them
+    if let Some(cd) = crate::car::physics::stats::cardata_of(own.iter().map(|s| s.as_str())) {
+        for e in carpaths::check(&cd, &|p: &str| game.read(p), &|p: &str| game.has(p)) {
+            r.err(e);
+        }
+    }
     if let Some(cd) = crate::car::physics::stats::cardata_of(own.iter().map(|s| s.as_str())).and_then(|p| game.read(&p)).and_then(|b| Msg::parse(&b).ok()) {
         let (de, dw) = crate::car::physics::dtcheck::check(&cd, None);
         for w in dw {

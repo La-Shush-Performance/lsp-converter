@@ -50,10 +50,25 @@ pub fn write(c: &mut Ctx) -> Result<()> {
             let mut cl_at = 0.0;
             let mut cd_at = 0.0;
             for (key, field, lo) in [("LUT_AOA_CL", 7u32, "aoa_cl"), ("LUT_AOA_CD", 8, "aoa_cd"), ("LUT_GH_CL", 9, "gh_cl"), ("LUT_GH_CD", 10, "gh_cd")] {
-                let Some(v) = a.get(&sec, key).filter(|v| !v.trim().is_empty()) else { continue };
-                let l = c.lut(v);
+                let named = a.get(&sec, key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+                let mut l = named.as_deref().map(|v| c.lut(v)).unwrap_or_default();
                 if l.is_empty() {
-                    continue;
+                    // OURS: EVO loads both angle-of-attack curves of every wing and fin (every
+                    // stock one has both; the ground-height pair is optional). The Formula
+                    // Truck Volvo FH names `front_wind_AOA_CD.lut` for its front_wing table:
+                    // left out, the empty path crashed EVO's physics thread ("Trying to load
+                    // a message with an empty path") whenever the car loaded. AC1 logs "Lut
+                    // file not found" and reads the missing table as 0: a flat zero curve.
+                    if field > 8 {
+                        continue;
+                    }
+                    let what = match &named {
+                        Some(v) => format!("{key} {v} is missing or empty"),
+                        None => format!("names no {key}"),
+                    };
+                    c.note(format!("physics: aero.ini {sec} ({}) {what} - a zero curve, as AC1 reads it (the wing adds no {})",
+                        a.get(&sec, "NAME").unwrap_or(&sec), if field == 7 { "lift" } else { "drag" }));
+                    l = vec![(-90.0, 0.0), (90.0, 0.0)];
                 }
                 if field == 7 {
                     cl_at = pbx::lerp_lut(&l, angle);
