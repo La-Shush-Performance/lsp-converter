@@ -98,6 +98,18 @@ fn lim(item: &str, value: f64, range: Option<(f64, f64, f64)>) -> Msg {
 }
 
 /// An AC1 setup.ini item's (min, max, step) times `scale`, when present.
+/// OURS: brake power is always adjustable up to BRAKE_POWER_MAX, the top of
+/// the stock envelope (stock cars reach 110 %), from AC1's minimum and step
+/// (else the envelope's 75 %, step 1); the default stays 100 %. AC1 stops at
+/// 100 %, but players found converted old cars' brakes weak and asked for
+/// more brake power in the setup (OverTake, elpopo664, 14 Nov 2026).
+const BRAKE_POWER_MAX: f64 = 110.0;
+
+fn brake_power_range(ac1: Option<(f64, f64, f64)>) -> (f64, f64, f64) {
+    let (lo, _, step) = ac1.unwrap_or((75.0, 100.0, 1.0));
+    (lo.min(100.0), BRAKE_POWER_MAX, step)
+}
+
 fn ac1_range(s: &Ini, sec: &str, scale: f64) -> Option<(f64, f64, f64)> {
     let lo = s.num(sec, "MIN")?;
     let hi = s.num(sec, "MAX")?;
@@ -416,7 +428,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
         (2, mv(lim("steer_ratio", d.steer_ratio, None))),
         (3, mv(msg(vec![
             (1, mv(lim("front_bias", d.front_bias, bias_range))),
-            (2, mv(lim("torque_multiplier", 100.0, ac1_range(&s, "BRAKE_POWER_MULT", 1.0)))),
+            (2, mv(lim("torque_multiplier", 100.0, Some(brake_power_range(ac1_range(&s, "BRAKE_POWER_MULT", 1.0)))))),
         ]))),
         (4, mv(msg(vec![
             (1, mv(lim("diff", diff[0], ac1_range(&s, "DIFF_POWER", 0.01)))),
@@ -580,4 +592,16 @@ pub fn write(c: &mut Ctx) -> Result<()> {
         if by_rules.is_empty() { String::new() } else { format!("; opened by the profile rules: {}", by_rules.join(" ")) }
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::brake_power_range;
+
+    #[test]
+    fn brake_power_goes_to_110_from_ac1s_minimum() {
+        assert_eq!(brake_power_range(Some((70.0, 100.0, 1.0))), (70.0, 110.0, 1.0));
+        assert_eq!(brake_power_range(None), (75.0, 110.0, 1.0));
+        assert_eq!(brake_power_range(Some((80.0, 100.0, 5.0))), (80.0, 110.0, 5.0));
+    }
 }
