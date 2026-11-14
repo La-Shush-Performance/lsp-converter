@@ -1,15 +1,15 @@
 /* LSP Converter UI - the About page's numbers, brought up to date before
    a build; don't edit by hand. Totals only. */
-const LSP_STATS_DATE = '11 November 2026';
+const LSP_STATS_DATE = '14 November 2026';
 const LSP_STATS = [
-  ['173', 'hours put in, between the code and the laps'],
-  ['557', 'laps driven in testing, in EVO and AC1'],
-  ['257', 'test sessions in EVO and AC1'],
+  ['188', 'hours put in, between the code and the laps'],
+  ['563', 'laps driven in testing, in EVO and AC1'],
+  ['265', 'test sessions in EVO and AC1'],
   ['102', 'MoTeC telemetry logs studied'],
   ['175', 'test cars built'],
   ['468', 'community mod cars converted and checked (then deleted)'],
   ['72', 'stock EVO cars measured to set the handling rules'],
   ['65', 'stock EVO engines measured for sound'],
-  ['193', 'automatic tests'],
-  ['231', 'changes since the original converter'],
+  ['195', 'automatic tests'],
+  ['236', 'changes since the original converter'],
 ];
