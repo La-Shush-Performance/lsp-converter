@@ -935,8 +935,15 @@ impl<'a> Tex<'a> {
     /// over the body, the skin's chassis_paints_1 detail is a flat grey, and
     /// the blue (0, 111, 223) the author's preview shows is only in
     /// 2022_Chassis_P_spec.dds, fed to EXT_Paint by that replacement. Read
-    /// without it, the body came out black. Only a flat (one-colour) file
-    /// counts: what CSP does with a patterned one is not known here.
+    /// without it, the body came out black. The colour tints the detail
+    /// (colour x detail, linear, as AC1's detail multiplies): measured on
+    /// the author's AC1 render (preview.jpg; the white number board at its
+    /// texture's level, so the lighting reads 1:1), the paint shows at 0.3
+    /// of the file's blue after the shading the red livery gets - the
+    /// skin's grey detail is 0.21 linear. Laid as the file's colour alone,
+    /// the body drew a light sky blue where AC1 shows steel blue. Only a
+    /// flat (one-colour) file counts: what CSP does with a patterned one is
+    /// not known here.
     /// Returns (file hash, colour sRGB 0..1).
     pub fn skin_csp_paint(&self, m: &Material, skin: &Path) -> Option<(u64, [f32; 3])> {
         let p = crate::ac1::car::find_ci(skin, "ext_config.ini")?;
@@ -1023,9 +1030,14 @@ impl<'a> Tex<'a> {
         };
         let own = dir.contains("\\skins\\");
         let img = texture::resize_to(&img, self.cap(true, own), true);
+        // the detail's mean colour (linear): the CSP colour tints it
+        let det_lin = det.as_ref().map(|d| {
+            let mu = mean(&d.0);
+            [srgb_lin(mu[0]), srgb_lin(mu[1]), srgb_lin(mu[2])]
+        }).unwrap_or([1.0; 3]);
         let det_img = if layered.is_some() || csp.is_some() { None } else { det.map(|d| d.0) };
         let (dmean, tiled) = match (&det_img, csp) {
-            (_, Some((_, c))) => ([srgb_lin(c[0]), srgb_lin(c[1]), srgb_lin(c[2])], false),
+            (_, Some((_, c))) => ([srgb_lin(c[0]) * det_lin[0], srgb_lin(c[1]) * det_lin[1], srgb_lin(c[2]) * det_lin[2]], false),
             (Some(d), None) => {
                 let mu = mean(d);
                 ([srgb_lin(mu[0]), srgb_lin(mu[1]), srgb_lin(mu[2])], colour_var(d) > 0.002 && mult <= 16.0)
