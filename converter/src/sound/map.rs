@@ -418,13 +418,14 @@ impl Role {
     }
     /// OURS: level offset (dB) on top of the AC1 event's own mix (docs/FMOD_BANK.md, section 13).
     /// The starting point of the level pass, and the gains used without the game's fmodstudio.dll:
-    /// the median offsets the level pass set on the test cars (Kunos and mod banks).
+    /// the median offsets the level pass set on the test cars (Kunos and mod banks), plus LEVEL_LIFT.
     fn gain(self) -> f32 {
-        match self {
-            Role::EngineInt => -18.0,
-            Role::EngineExt | Role::Turbo | Role::Transmission | Role::Horn => -14.0,
-            Role::Backfire | Role::GearBox => -12.0,
-        }
+        LEVEL_LIFT
+            + match self {
+                Role::EngineInt => -18.0,
+                Role::EngineExt | Role::Turbo | Role::Transmission | Role::Horn => -14.0,
+                Role::Backfire | Role::GearBox => -12.0,
+            }
     }
 }
 
@@ -780,9 +781,13 @@ struct Trigger {
 
 /// OURS: the level a converted engine is set to - RMS (dBFS) of a 1000 rpm -> limiter sweep at
 /// full throttle (exterior 6 m behind, interior 1 m) - the median of the 75 stock cars measured the same way
-/// (docs/FMOD_BANK.md, section 13).
-const TARGET_EXT: f32 = -15.6;
-const TARGET_INT: f32 = -17.2;
+/// (docs/FMOD_BANK.md, section 13: exterior -15.6, interior -17.2), raised by LEVEL_LIFT.
+const TARGET_EXT: f32 = -15.6 + LEVEL_LIFT;
+const TARGET_INT: f32 = -17.2 + LEVEL_LIFT;
+/// OURS: how far converted cars sit above the stock median (dB). Players found converted engines
+/// too quiet at the stock median, even with the game's volume up (OverTake, 12 Nov 2026); AC1
+/// plays about 4 dB louder than EVO. Every sound role moves together, so the mod's balance stays.
+const LEVEL_LIFT: f32 = 4.0;
 
 /// OURS: how much an engine's level rises over the level sweep (dB, a straight line fitted to six
 /// equal rpm bands), p10..p90 of the 65 stock combustion engines measured the same way
@@ -912,7 +917,7 @@ pub fn build(car_dir: &Path, o: &Opts) -> Result<Built> {
                 continue;
             }
             let (de, di) = ((TARGET_EXT - lv[0]).clamp(-30.0, 30.0), (TARGET_INT - lv[1]).clamp(-30.0, 30.0));
-            level_note = format!("level: engine ext {:.1} dB, int {:.1} dB (target {TARGET_EXT} / {TARGET_INT}) after round {}", lv[0], lv[1], round);
+            level_note = format!("level: engine ext {:.1} dB, int {:.1} dB (target {TARGET_EXT:.1} / {TARGET_INT:.1}) after round {}", lv[0], lv[1], round);
             if std::env::var_os("ACECONV_SOUND_DEBUG").is_some() {
                 eprintln!("level round {round}: gains ext {:+.1} int {:+.1} -> {:.1} / {:.1}", gains[&Role::EngineExt], gains[&Role::EngineInt], lv[0], lv[1]);
             }

@@ -279,8 +279,9 @@ decompiled by `mkfmod` onto the game's mixer, built by `bankwrite`, written as `
   game's runtime (`grid`) and the AC1 event in AC1's runtime (`ac1grid`), the AC1 bank's layers (`params`).
 * Level (OURS): an automated volume ignores the bus value (curves set it, several add up), so offsets go onto a curve.
   The stage builds, renders a 1000 rpm -> limiter full-throttle sweep through the game's fmodstudio.dll (exterior 6 m
-  behind the car, interior 1 m), and rebuilds with the engine master offset so the RMS is the median of the 75 stock
-  cars measured the same way: exterior -15.6 dBFS, interior -17.2 dBFS (stock IQR -17.8..-13.7 / -18.4..-15.7). The
+  behind the car, interior 1 m), and rebuilds with the engine master offset so the RMS is 4 dB above the median of the
+  75 stock cars measured the same way: median exterior -15.6 dBFS, interior -17.2 dBFS (stock IQR -17.8..-13.7 /
+  -18.4..-15.7), so targets -11.6 / -13.2 (14 Nov 2026: players found converted engines too quiet at the median). The
   other roles take the exterior offset (AC1's own balance between them stays). Without the DLL: fixed role gains.
 * Rpm balance (OURS): the first sweep is cut into six equal rpm bands and a straight line fitted to them gives the
   engine's rise over the sweep. Stock p10..p90 (65 combustion engines, `soundprobe stocklevel`): exterior 3.2..12.6 dB,
