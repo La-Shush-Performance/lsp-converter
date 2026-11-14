@@ -486,6 +486,38 @@ fn cache_key(img: &Image, fmt: Fmt, srgb: bool) -> u64 {
     h
 }
 
+/// The identity of an encoded texture: equal keys give byte-identical mips
+/// (the converter's de-dupe key for its own textures).
+pub fn pixel_key(img: &Image, fmt: Fmt, srgb: bool) -> u64 {
+    cache_key(img, fmt, srgb)
+}
+
+/// The `.texturemips` size of a `w` x `h` image in `fmt`, without encoding
+/// it: what `paged` writes (one 64 KiB page per tile, every mip down to 1x1
+/// for block formats and UI art, one level otherwise).
+pub fn paged_bytes(w: u32, h: u32, fmt: Fmt) -> usize {
+    let (tw, th) = fmt.tile();
+    let (mut w, mut h) = (w.max(1), h.max(1));
+    let mut pages = 0usize;
+    loop {
+        pages += (w.div_ceil(tw).max(1) * h.div_ceil(th).max(1)) as usize;
+        if !(fmt.block() || fmt == Fmt::Ui) || (w == 1 && h == 1) {
+            break;
+        }
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+    }
+    pages * PAGE
+}
+
+/// The size `resize_to(img, maxdim)` gives a `w` x `h` image.
+pub fn resized_dims(w: u32, h: u32, maxdim: u32) -> (u32, u32) {
+    let (mut w, mut h) = (w, h);
+    while w > maxdim || h > maxdim {
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+    }
+    (w, h)
+}
+
 /// The paged mips of a texture: everything but the header, which carries
 /// the source name (so identical pixels under two names share this).
 struct Paged {
@@ -674,6 +706,18 @@ fn header(img: &Image, fmt: Fmt, source_name: &str, p: &Paged) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paged_bytes_is_what_encode_writes() {
+        for (w, h) in [(300, 200), (512, 512), (1, 1), (257, 1030)] {
+            let img = Image { w, h, px: vec![90; (w * h * 4) as usize] };
+            for fmt in [Fmt::Bc7, Fmt::Bc6h, Fmt::Bc1D, Fmt::Bc4, Fmt::Rgba8, Fmt::Ui] {
+                assert_eq!(paged(&img, fmt, true).out.len(), paged_bytes(w, h, fmt), "{w}x{h} {fmt:?}");
+            }
+        }
+        assert_eq!(resized_dims(4096, 2048, 1024), (1024, 512));
+        assert_eq!(resized_dims(300, 200, 4096), (300, 200));
+    }
 
     #[test]
     fn header_and_pages_agree() {

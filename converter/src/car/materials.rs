@@ -571,13 +571,18 @@ pub struct DetailLayer {
     pub splat: Option<String>,
 }
 
-/// A detail tiled this many times or more is baked into the base map as its
-/// mean colour (`albedo`) instead of laid as a layer: the pattern is
-/// millimetres across, and EVO did not draw such a layer the way AC1 shows
-/// it. The La Shush Street's EXT_Plastic quarter panels (white EXT_Skin9
-/// under carbon_fiber2 at 400) came out white instead of carbon grey, as
-/// the S14's splitter did before. A flat diffuse under its detail still
-/// takes the detail as its base map (`flat_base_detail`).
+/// A detail tiled this many times or more is laid as a flat layer of its
+/// mean colour (no map, no detail normal: the pattern is millimetres across,
+/// so the colour is all AC1 shows of it), on the one shared base map.
+/// History: from 2 Nov it was baked into the base map instead, after the La
+/// Shush Street's EXT_Plastic (white EXT_Skin9 under carbon_fiber2 at 400)
+/// drew white - the Blue-layer bug fixed on 8 Nov (`apply_detail`: Blue
+/// never multiplied). Baked, every such detail made its own copy of the
+/// diffuse: rss_gtm_mercer_v8's 2022_Chassis_P livery is shared by 17
+/// materials with 13 fine details (carbon, plastic, metals at 155..2222),
+/// 14 copies per skin, which held its 8 skins to 1024. A flat diffuse
+/// under its detail still takes the detail as its base map
+/// (`flat_base_detail`).
 pub const FINE_DETAIL: f32 = 100.0;
 
 /// The variance of an image's colour (sRGB 0..1), sampled.
@@ -611,13 +616,43 @@ pub struct Tex<'a> {
     /// out at 4096; ACECONV_TEXMAX lowers both)
     pub max_color: u32,
     pub max_other: u32,
-    /// the default skin's folder (its textures are the car's own; other
-    /// skins' variants are capped at 2048)
-    pub default_skin: Option<String>,
+    /// longest side the size plan (`plan_caps`) allows the car's shared
+    /// textures / a skin's own ones; u32::MAX = not planned
+    pub shared_cap: u32,
+    pub skin_cap: u32,
+    /// measuring pass: nothing is encoded, `put` records what it would write
+    pub measure: bool,
+    measured: Vec<Planned>,
+    /// encoded textures by pixel identity: identical output is written once
+    by_pixels: HashMap<u64, String>,
     pub count: usize,
     pub bytes: usize,
     pub notes: Vec<String>,
 }
+
+/// One texture the measuring pass saw (unique pixels), at the size it had
+/// with no plan.
+struct Planned {
+    w: u32,
+    h: u32,
+    fmt: Fmt,
+    /// sized by the colour cap (`max_color`) rather than `max_other`
+    colour: bool,
+    /// the skin folder it is in (one livery's own), None: the car's shared
+    skin: Option<String>,
+}
+
+/// What one livery of a converted car may take - the shared textures plus
+/// that skin's own: the largest stock car carries 553 MB of mips (stock:
+/// 132..553, p90 369). Per livery, not per package: EVO streams texture
+/// pages on demand (64 KiB tiles into its tile pool), so only the livery
+/// on screen is in video memory, and counting every skin as if all were
+/// made a car with more skins look worse (rss_gtm_mercer_v8: 8 skins held
+/// to 2048 where one gets 4096).
+pub const TEXTURE_PLAN_BYTES: usize = 550 << 20;
+/// What a whole package's textures may take (every skin): a ceiling for
+/// download and disk, so a car with dozens of skins stays shareable.
+pub const TEXTURE_PACKAGE_BYTES: usize = 2048 << 20;
 
 pub fn h64(b: &[u8]) -> u64 {
     // every byte, 8 at a time. A sample (every 16th byte of a 16 MB file)
@@ -711,7 +746,8 @@ impl<'a> Tex<'a> {
         Tex {
             k, by_name, base: format!("content\\cars\\{id}"), done: HashMap::new(), metal_done: HashMap::new(), used_names: HashSet::new(), means: HashMap::new(),
             means_under: HashMap::new(),
-            max_color: lim.min(4096), max_other: lim.min(2048), default_skin: None, count: 0, bytes: 0, notes: Vec::new(),
+            max_color: lim.min(4096), max_other: lim.min(2048), shared_cap: u32::MAX, skin_cap: u32::MAX,
+            measure: false, measured: Vec::new(), by_pixels: HashMap::new(), count: 0, bytes: 0, notes: Vec::new(),
         }
     }
 
@@ -741,25 +777,79 @@ impl<'a> Tex<'a> {
         }
     }
 
-    /// The longest side for a new texture (ours): the caps above; a
-    /// non-default skin's variant at most 2048; past 560 MB of mips at most
-    /// 1024, past 700 MB at most 512 (stock cars carry 132..553 MB, p90 369:
-    /// the budget only stops a car from going past the largest stock one;
-    /// at 200 / 320 MB it cut the Pagani's 2048 skins to 1024 / 512 in
-    /// conversion order, below both AC1 and stock).
-    fn cap(&self, colour: bool, skin: Option<&str>) -> u32 {
+    /// The longest side for a new texture (ours): the caps above, then the
+    /// size plan (`plan_caps`: one size for every skin's own textures, one
+    /// for the shared ones). `own`: the texture goes to a skin's folder.
+    /// Backstop: unplanned, past 560 MB of mips at most 1024, past 700 MB at
+    /// most 512 (at 200 / 320 MB it cut the Pagani's 2048 skins to 1024 /
+    /// 512); planned, at most 512 past a quarter over the package ceiling
+    /// (the plan is exact: it only catches a stage the measuring pass
+    /// missed).
+    ///
+    /// RULE: every skin gets the same size, decided before anything is
+    /// encoded. Example: rss_gtm_mercer_v8 (8 skins of 4096 liveries, ~20
+    /// textures per skin made from each) - capped as it went, the first
+    /// skins took the budget at 4096 and the last three (the "2026 ..."
+    /// skins, last by name) came out at 512, blurred; and a non-default skin
+    /// was always held to 2048 even when the car had room for its 4096.
+    fn cap(&self, colour: bool, own: bool) -> u32 {
         let mut c = if colour { self.max_color } else { self.max_other };
-        if let (Some(s), Some(d)) = (skin, &self.default_skin) {
-            if !s.eq_ignore_ascii_case(d) {
-                c = c.min(2048);
-            }
+        if self.measure {
+            return c;
         }
-        if self.bytes > 700 << 20 {
+        c = c.min(if own { self.skin_cap } else { self.shared_cap });
+        if self.skin_cap != u32::MAX {
+            if self.bytes > TEXTURE_PACKAGE_BYTES / 4 * 5 {
+                c = c.min(512);
+            }
+        } else if self.bytes > 700 << 20 {
             c = c.min(512);
         } else if self.bytes > 560 << 20 {
             c = c.min(1024);
         }
         c
+    }
+
+    /// The size plan from a measuring pass (`measure`): the largest skin
+    /// cap, then the largest shared cap (never below the skins'), with
+    /// which the shared textures plus the largest livery fit `livery` and
+    /// the whole package fits `package`. Skins come first: a livery is what
+    /// a car is looked at for. Returns (shared, skin, bytes of the largest
+    /// livery, bytes of the package).
+    pub fn plan_caps(&self, livery: usize, package: usize) -> (u32, u32, usize, usize) {
+        let sizes = [4096u32, 2048, 1024, 512];
+        let totals = |shared: u32, skin: u32| -> (usize, usize) {
+            let mut shared_b = 0usize;
+            let mut per: HashMap<&str, usize> = HashMap::new();
+            for p in &self.measured {
+                let lim = if p.skin.is_some() { skin } else { shared };
+                let c = if p.colour { self.max_color.min(lim) } else { self.max_other.min(lim) };
+                let (w, h) = texture::resized_dims(p.w, p.h, c);
+                let b = texture::paged_bytes(w, h, p.fmt);
+                match &p.skin {
+                    Some(s) => *per.entry(s.as_str()).or_default() += b,
+                    None => shared_b += b,
+                }
+            }
+            (shared_b + per.values().copied().max().unwrap_or(0), shared_b + per.values().sum::<usize>())
+        };
+        for &skin in &sizes {
+            for &shared in sizes.iter().filter(|&&s| s >= skin) {
+                let (l, p) = totals(shared, skin);
+                if l <= livery && p <= package {
+                    return (shared, skin, l, p);
+                }
+            }
+        }
+        let (l, p) = totals(512, 512);
+        (512, 512, l, p)
+    }
+
+    /// The measuring pass's textures (unique pixels) and their bytes with no
+    /// plan.
+    pub fn measured(&self) -> (usize, usize) {
+        let b = self.measured.iter().map(|p| texture::paged_bytes(p.w, p.h, p.fmt)).sum();
+        (self.measured.len(), b)
     }
 
     fn unique_path(&mut self, dir: &str, stem: &str) -> String {
@@ -783,12 +873,30 @@ impl<'a> Tex<'a> {
     }
 
     /// `src`: the AC1 texture's relative name (the header's source path).
-    fn put(&mut self, files: &mut Files, path: &str, img: &Image, fmt: Fmt, srgb: bool, src: &str) {
+    /// `colour`: sized by the colour cap. Returns the texture's path: an
+    /// earlier one with the same pixels when there is one (RULE: identical
+    /// textures are written once - rss_gtm_mercer_v8's first skin made 22
+    /// textures from its livery, 15 different).
+    fn put(&mut self, files: &mut Files, path: &str, img: &Image, fmt: Fmt, srgb: bool, src: &str, colour: bool) -> String {
+        let key = texture::pixel_key(img, fmt, srgb);
+        if let Some(p) = self.by_pixels.get(&key) {
+            return p.clone();
+        }
+        self.by_pixels.insert(key, path.to_string());
+        if self.measure {
+            let lp = path.to_lowercase();
+            let skin = lp.split_once("\\skins\\").map(|(_, r)| r.split('\\').next().unwrap_or("").to_string());
+            self.measured.push(Planned { w: img.w, h: img.h, fmt, colour, skin });
+            files.put(path, Vec::new());
+            files.put(&format!("{path}mips"), Vec::new());
+            return path.to_string();
+        }
         let e = texture::encode(img, fmt, srgb, src);
         self.count += 1;
         self.bytes += e.mips.len();
         files.put(path, e.header);
         files.put(&format!("{path}mips"), e.mips);
+        path.to_string()
     }
 
     /// The material's AC1 detail map when it goes to a layer
@@ -819,6 +927,43 @@ impl<'a> Tex<'a> {
         Some((d, h, mult, textured))
     }
 
+    /// RULE: a skin's own CSP config (`<skin>\ext_config.ini`) that swaps a
+    /// paint material to `stPerPixelMultiMap_specular` and gives it a
+    /// one-colour `txSpecular` file paints that colour where the diffuse's
+    /// alpha leaves the surface to the detail. Example: rss_gtm_mercer_v8's
+    /// "2026 ... Verstappen #3" skins - 2022_Chassis_P is black with alpha 0
+    /// over the body, the skin's chassis_paints_1 detail is a flat grey, and
+    /// the blue (0, 111, 223) the author's preview shows is only in
+    /// 2022_Chassis_P_spec.dds, fed to EXT_Paint by that replacement. Read
+    /// without it, the body came out black. Only a flat (one-colour) file
+    /// counts: what CSP does with a patterned one is not known here.
+    /// Returns (file hash, colour sRGB 0..1).
+    pub fn skin_csp_paint(&self, m: &Material, skin: &Path) -> Option<(u64, [f32; 3])> {
+        let p = crate::ac1::car::find_ci(skin, "ext_config.ini")?;
+        let secs = crate::car::fx::parse_csp(&String::from_utf8_lossy(&std::fs::read(p).ok()?));
+        for s in secs.iter().filter(|s| s.name.to_lowercase().starts_with("shader_replacement")) {
+            let ours = s.get("MATERIALS").is_some_and(|v| crate::car::fx::name_list(v).iter().any(|n| n.eq_ignore_ascii_case(&m.name)));
+            if !ours || !s.get("SHADER").is_some_and(|v| v.trim().eq_ignore_ascii_case("stPerPixelMultiMap_specular")) {
+                continue;
+            }
+            // RESOURCE_n = txSpecular, RESOURCE_FILE_n = <file>
+            for (k, v) in &s.keys {
+                let Some(n) = k.to_uppercase().strip_prefix("RESOURCE_").map(str::to_string) else { continue };
+                if n.starts_with("FILE") || !v.trim().eq_ignore_ascii_case("txSpecular") {
+                    continue;
+                }
+                let file = s.get(&format!("RESOURCE_FILE_{n}"))?.trim().to_string();
+                let (img, from_skin, h) = self.image(&file, Some(skin))?;
+                if !from_skin || colour_var(&img) > 0.0002 {
+                    return None;
+                }
+                let mu = mean(&img);
+                return Some((h, [mu[0], mu[1], mu[2]]));
+            }
+        }
+        None
+    }
+
     /// The base colour of a material as AC1 shows it: the diffuse map times
     /// the detail map where the diffuse alpha is 0 (AC1 multimap rule:
     /// colour = diffuse x lerp(detail, 1, diffuse alpha); Kunos street cars
@@ -831,12 +976,18 @@ impl<'a> Tex<'a> {
         let dname = m.texture("txDiffuse").unwrap_or("").to_string();
         let (img, from_skin, h) = self.image(&dname, skin.map(|s| s.1))?;
         let detail_name = m.texture("txDetail").filter(|_| uses_detail(m)).unwrap_or("").to_string();
-        let layered = self.tiled_detail(m, skin.map(|s| s.1), paint).filter(|d| d.2 < FINE_DETAIL);
+        let layered = self.tiled_detail(m, skin.map(|s| s.1), paint).map(|d| if d.2 >= FINE_DETAIL { (d.0, d.1, d.2, false) } else { d });
         let det = self.image(&detail_name, skin.map(|s| s.1));
         let mult = prop(m, "detailUVMultiplier").unwrap_or(1.0).abs().max(0.01);
         let dh = det.as_ref().map(|d| d.2).unwrap_or(0);
+        // a skin's own CSP paint colour (`skin_csp_paint`) takes the area
+        // the diffuse alpha leaves open, in place of the detail
+        let csp = if paint { skin.and_then(|(_, sp)| self.skin_csp_paint(m, sp)) } else { None };
+        let layered = if csp.is_some() { None } else { layered };
         // a layered detail is not in the base map: one base per diffuse
-        let key = if layered.is_some() {
+        let key = if let Some((ch, _)) = csp {
+            (h ^ ch.rotate_left(29) ^ 0xc5b0_9a17 ^ (paint as u64) << 63, Role::Color)
+        } else if layered.is_some() {
             (h ^ 0x5eed_1a7e ^ (paint as u64) << 63, Role::Color)
         } else {
             (h ^ dh.rotate_left(17) ^ (paint as u64) << 63 ^ (mult.to_bits() as u64) << 7, Role::Color)
@@ -860,16 +1011,29 @@ impl<'a> Tex<'a> {
             let c = shown(self, &p);
             return Some((p, c));
         }
-        let img = texture::resize_to(&img, self.cap(true, skin.map(|s| s.0)), true);
-        let det_img = if layered.is_some() { None } else { det.map(|d| d.0) };
-        let (dmean, tiled) = match &det_img {
-            Some(d) => {
+        let dir = match (from_skin, skin) {
+            (true, Some((sname, _))) => format!("{}\\skins\\{}", self.base, slug(sname)),
+            // the skin's CSP colour makes it skin-specific
+            (false, Some((sname, _))) if csp.is_some() => format!("{}\\skins\\{}", self.base, slug(sname)),
+            _ => match skin {
+                // a detail map from the skin also makes this skin-specific
+                Some((sname, sp)) if layered.is_none() && crate::ac1::car::find_ci(sp, &detail_name).is_some() => format!("{}\\skins\\{}", self.base, slug(sname)),
+                _ => format!("{}\\texture", self.base),
+            },
+        };
+        let own = dir.contains("\\skins\\");
+        let img = texture::resize_to(&img, self.cap(true, own), true);
+        let det_img = if layered.is_some() || csp.is_some() { None } else { det.map(|d| d.0) };
+        let (dmean, tiled) = match (&det_img, csp) {
+            (_, Some((_, c))) => ([srgb_lin(c[0]), srgb_lin(c[1]), srgb_lin(c[2])], false),
+            (Some(d), None) => {
                 let mu = mean(d);
                 ([srgb_lin(mu[0]), srgb_lin(mu[1]), srgb_lin(mu[2])], colour_var(d) > 0.002 && mult <= 16.0)
             }
-            None => ([1.0; 3], false),
+            (None, None) => ([1.0; 3], false),
         };
-        let has_detail = det_img.is_some() || layered.is_some();
+        let has_detail = det_img.is_some() || layered.is_some() || csp.is_some();
+        let replace = csp.is_some();
         let dmean = if layered.is_some() { [1.0; 3] } else { dmean };
         let (w, hh) = (img.w, img.h);
         let mut px = vec![0u8; (w * hh * 4) as usize];
@@ -890,7 +1054,7 @@ impl<'a> Tex<'a> {
                     dmean
                 };
                 for k in 0..3 {
-                    let v = lut[c[k] as usize] * (d[k] + (1.0 - d[k]) * a);
+                    let v = if replace { lut[c[k] as usize] * a + d[k] * (1.0 - a) } else { lut[c[k] as usize] * (d[k] + (1.0 - d[k]) * a) };
                     sum[k] += v as f64;
                     under[k] += (v * (1.0 - a)) as f64;
                     px[i + k] = (lin_srgb(v) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
@@ -901,18 +1065,10 @@ impl<'a> Tex<'a> {
         let n = (w * hh).max(1) as f64;
         let mean_lin = [(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32];
         let out = Image { w, h: hh, px };
-        let dir = match (from_skin, skin) {
-            (true, Some((sname, _))) => format!("{}\\skins\\{}", self.base, slug(sname)),
-            _ => match skin {
-                // a detail map from the skin also makes this skin-specific
-                Some((sname, sp)) if layered.is_none() && crate::ac1::car::find_ci(sp, &detail_name).is_some() => format!("{}\\skins\\{}", self.base, slug(sname)),
-                _ => format!("{}\\texture", self.base),
-            },
-        };
         let p = self.unique_path(&dir, &slug(&dname));
         let fmt = colour_format(&out, paint);
         let src = ac1_name(&dname, from_skin, skin.map(|s| s.0));
-        self.put(files, &p, &out, fmt, true, &src);
+        let p = self.put(files, &p, &out, fmt, true, &src, true);
         self.done.insert(key, Some(p.clone()));
         self.means.insert(p.clone(), mean_lin);
         self.means_under.insert(p.clone(), [(under[0] / n) as f32, (under[1] / n) as f32, (under[2] / n) as f32]);
@@ -932,53 +1088,49 @@ impl<'a> Tex<'a> {
             (true, Some((sname, _))) => format!("{}\\skins\\{}", self.base, slug(sname)),
             _ => format!("{}\\texture", self.base),
         };
+        let own = dir.contains("\\skins\\");
         let stem = slug(name);
         let src = ac1_name(name, from_skin, skin.map(|s| s.0));
         let out = match role {
             Role::Color => {
-                let img = texture::resize_to(&img, self.cap(true, skin.map(|s| s.0)), true);
+                let img = texture::resize_to(&img, self.cap(true, own), true);
                 let p = self.unique_path(&dir, &stem);
                 let fmt = colour_format(&img, false);
-                self.put(files, &p, &img, fmt, true, &src);
-                Some(p)
+                Some(self.put(files, &p, &img, fmt, true, &src, true))
             }
             Role::Print => {
-                let img = texture::resize_to(&img, self.cap(true, skin.map(|s| s.0)), true);
+                let img = texture::resize_to(&img, self.cap(true, own), true);
                 let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
                 let a = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_print"));
-                self.put(files, &p, &a, Fmt::Bc7, true, &src);
-                Some(p)
+                Some(self.put(files, &p, &a, Fmt::Bc7, true, &src, true))
             }
             Role::Normal => {
                 if is_flat_normal(&img) {
                     None
                 } else {
-                    let img = texture::resize_to(&img, self.cap(false, skin.map(|s| s.0)), false);
+                    let img = texture::resize_to(&img, self.cap(false, own), false);
                     let p = self.unique_path(&dir, &format!("{stem}_nm"));
-                    self.put(files, &p, &img, Fmt::Bc6h, false, &src);
-                    Some(p)
+                    Some(self.put(files, &p, &img, Fmt::Bc6h, false, &src, false))
                 }
             }
             Role::Alpha => {
-                let img = texture::resize_to(&img, self.cap(false, skin.map(|s| s.0)), false);
+                let img = texture::resize_to(&img, self.cap(false, own), false);
                 let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| [c[3], c[3], c[3], 255]).collect();
                 let a = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_at"));
-                self.put(files, &p, &a, Fmt::Bc4, false, &src);
-                Some(p)
+                Some(self.put(files, &p, &a, Fmt::Bc4, false, &src, false))
             }
             Role::Cut(t) => {
-                let img = texture::resize_to(&img, self.cap(false, skin.map(|s| s.0)), false);
+                let img = texture::resize_to(&img, self.cap(false, own), false);
                 let cut = (t as f32 / 1000.0 * 255.0).round() as u8;
                 let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| { let v = if c[3] >= cut { 255 } else { 0 }; [v, v, v, 255] }).collect();
                 let a = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_cut"));
-                self.put(files, &p, &a, Fmt::Bc4, false, &src);
-                Some(p)
+                Some(self.put(files, &p, &a, Fmt::Bc4, false, &src, false))
             }
             Role::Mask => {
-                let img = texture::resize_to(&img, self.cap(false, skin.map(|s| s.0)), false);
+                let img = texture::resize_to(&img, self.cap(false, own), false);
                 let peak = img.px.chunks_exact(4).map(|c| c[0].max(c[1]).max(c[2])).max().unwrap_or(0).max(1) as f32;
                 let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| {
                     let v = (c[0].max(c[1]).max(c[2]) as f32 * 255.0 / peak).round().min(255.0) as u8;
@@ -986,32 +1138,29 @@ impl<'a> Tex<'a> {
                 }).collect();
                 let a = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_mask"));
-                self.put(files, &p, &a, Fmt::Bc4, false, &src);
-                Some(p)
+                Some(self.put(files, &p, &a, Fmt::Bc4, false, &src, false))
             }
             Role::Detail(_) => {
                 // the AC1 detail colours as they multiply the base
-                let img = texture::resize_to(&img, self.cap(true, skin.map(|s| s.0)), true);
+                let img = texture::resize_to(&img, self.cap(true, own), true);
                 let px = img.px.chunks_exact(4).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
                 let img = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_detail"));
-                self.put(files, &p, &img, Fmt::Bc1D, true, &src);
-                Some(p)
+                Some(self.put(files, &p, &img, Fmt::Bc1D, true, &src, true))
             }
             Role::Splat => {
                 // where the detail shows (1 - diffuse alpha), linear, in every
                 // channel: the detail layer reads its own, the template's
                 // other layers are off
-                let img = texture::resize_to(&img, self.cap(false, skin.map(|s| s.0)), false);
+                let img = texture::resize_to(&img, self.cap(false, own), false);
                 let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| [255 - c[3], 255 - c[3], 255 - c[3], 255]).collect();
                 let a = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_splat"));
-                self.put(files, &p, &a, Fmt::Bc1, false, &src);
-                Some(p)
+                Some(self.put(files, &p, &a, Fmt::Bc1, false, &src, false))
             }
             Role::Rough(e, s) => {
                 let (exp, spec) = (e as f32 / 1000.0, s as f32 / 1000.0);
-                let img = texture::resize_to(&img, self.cap(false, skin.map(|s| s.0)), false);
+                let img = texture::resize_to(&img, self.cap(false, own), false);
                 // R = specular mask, G = glossiness (exponent multiplier)
                 let px: Vec<u8> = img.px.chunks_exact(4).flat_map(|c| {
                     let r = roughness((exp * (c[1] as f32 / 255.0)).max(1.0), spec * (c[0] as f32 / 255.0));
@@ -1020,8 +1169,7 @@ impl<'a> Tex<'a> {
                 }).collect();
                 let rimg = Image { w: img.w, h: img.h, px };
                 let p = self.unique_path(&dir, &format!("{stem}_r"));
-                self.put(files, &p, &rimg, Fmt::Bc4, false, &src);
-                Some(p)
+                Some(self.put(files, &p, &rimg, Fmt::Bc4, false, &src, false))
             }
         };
         self.done.insert(key, out.clone());
@@ -1051,7 +1199,8 @@ impl<'a> Tex<'a> {
         if let Some(v) = self.metal_done.get(&key) {
             return v.clone();
         }
-        let img = texture::resize_to(&dimg, self.cap(true, skin.map(|s| s.0)), true);
+        let own = (d_skin || m_skin) && skin.is_some();
+        let img = texture::resize_to(&dimg, self.cap(true, own), true);
         let (w, h) = (img.w, img.h);
         let lut: Vec<f32> = (0..256).map(|i| srgb_lin(i as f32 / 255.0)).collect();
         let n = (w * h * 4) as usize;
@@ -1086,11 +1235,11 @@ impl<'a> Tex<'a> {
         let col = Image { w, h, px: col };
         let cp = self.unique_path(&dir, &format!("{dstem}_metalc"));
         let fmt = colour_format(&col, false);
-        self.put(files, &cp, &col, fmt, true, &ac1_name(&dname, d_skin, skin.map(|s| s.0)));
+        let cp = self.put(files, &cp, &col, fmt, true, &ac1_name(&dname, d_skin, skin.map(|s| s.0)), true);
         let mp = self.unique_path(&dir, &format!("{mstem}_metal"));
-        self.put(files, &mp, &Image { w, h, px: met }, Fmt::Bc4, false, &ac1_name(&mname, m_skin, skin.map(|s| s.0)));
+        let mp = self.put(files, &mp, &Image { w, h, px: met }, Fmt::Bc4, false, &ac1_name(&mname, m_skin, skin.map(|s| s.0)), true);
         let rp = self.unique_path(&dir, &format!("{mstem}_metalr"));
-        self.put(files, &rp, &Image { w, h, px: rou }, Fmt::Bc4, false, &ac1_name(&mname, m_skin, skin.map(|s| s.0)));
+        let rp = self.put(files, &rp, &Image { w, h, px: rou }, Fmt::Bc4, false, &ac1_name(&mname, m_skin, skin.map(|s| s.0)), true);
         let out = Some((cp, mp, rp));
         self.metal_done.insert(key, out.clone());
         out
@@ -1127,7 +1276,10 @@ impl<'a> Tex<'a> {
     /// same layer. None when the detail is baked instead, or the diffuse
     /// alpha hides it everywhere.
     pub fn detail_layer(&mut self, files: &mut Files, m: &Material, skin: Option<(&str, &Path)>, paint: bool) -> Option<DetailLayer> {
-        let (dimg, _, mult, textured) = self.tiled_detail(m, skin.map(|s| s.1), paint).filter(|d| d.2 < FINE_DETAIL)?;
+        let (dimg, _, mult, textured) = self.tiled_detail(m, skin.map(|s| s.1), paint)?;
+        // a fine detail (FINE_DETAIL): its mean colour, flat, no normal
+        let fine = mult >= FINE_DETAIL;
+        let textured = textured && !fine;
         let dname = m.texture("txDiffuse")?.to_string();
         let (img, _, _) = self.image(&dname, skin.map(|s| s.1))?;
         let (mut lo, mut hi) = (255u8, 0u8);
@@ -1147,9 +1299,11 @@ impl<'a> Tex<'a> {
             (None, [srgb_lin(mu[0]), srgb_lin(mu[1]), srgb_lin(mu[2])])
         };
         let splat = if hi < 8 { None } else { Some(self.get(files, &dname, Role::Splat, skin)?) };
-        let normal = m.texture("txNormalDetail").and_then(|n| self.get(files, n, Role::Normal, skin))
-            .map(|p| (p, prop(m, "detailNormalBlend").unwrap_or(1.0).clamp(0.0, 1.0)));
-        Some(DetailLayer { map, colour, normal, mult, splat })
+        let normal = if fine { None } else {
+            m.texture("txNormalDetail").and_then(|n| self.get(files, n, Role::Normal, skin))
+                .map(|p| (p, prop(m, "detailNormalBlend").unwrap_or(1.0).clamp(0.0, 1.0)))
+        };
+        Some(DetailLayer { map, colour, normal, mult: if fine { 1.0 } else { mult }, splat })
     }
 }
 

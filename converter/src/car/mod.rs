@@ -486,10 +486,38 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let mut anim = animparts::plan(&animparts::Input { k: &k, ac1_dir: &car.dir, data: &car.data, ah: [d[0] as f32, d[1] as f32, d[2] as f32] });
     let plan = body::plan(&k, &insts, &frame, &hints, &donor_ext, Some(&mut anim));
     notes.extend(plan.notes.iter().cloned());
-    let mut tex = materials::Tex::new(&k, &id);
-    tex.default_skin = car.skins.first().cloned();
     let default_skin = car.skins.first().map(|s| (s.as_str(), car.skin_dir(s)));
     let author = body::Author { files: car.lods.iter().map(|l| l.file.clone()).collect(), hints: &hints, anim: Some(&anim) };
+    // the texture size plan: a measuring pass over the stages that write
+    // textures (nothing encoded, every file it touched rolled back), then
+    // one size for every skin (`Tex::plan_caps`)
+    let mut tex = materials::Tex::new(&k, &id);
+    {
+        let mut m = materials::Tex::new(&k, &id);
+        m.measure = true;
+        files.begin();
+        let measured = (|| -> Result<()> {
+            let w = body::write(&mut files, &id, &stem, &k, &insts, &frame, &plan, &mut m, &templates, game.as_ref(), default_skin.clone(), &author)?;
+            let wh = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut m, &templates, default_skin.clone(), game.as_ref())?;
+            belts::write(&mut files, &id, &stem, &k, &insts, &frame, &mut m, &templates, default_skin.clone())?;
+            let secs: Vec<skins::Section> = w.sections.iter().map(|(n, kind, mi, int, p)| skins::Section { name: n, kind: *kind, material: *mi, interior: *int, path: p }).collect();
+            skins::write(&mut files, &ident, &car, &k, &secs, &wh.rim_mats, &mut m, &templates, paint_tmpl.clone())?;
+            Ok(())
+        })();
+        files.rollback();
+        match measured {
+            Ok(()) => {
+                let (n, full) = m.measured();
+                let (shared, skin, livery, package) = m.plan_caps(materials::TEXTURE_PLAN_BYTES, materials::TEXTURE_PACKAGE_BYTES);
+                tex.shared_cap = shared;
+                tex.skin_cap = skin;
+                let mb = |b: usize| b as f64 / 1048576.0;
+                notes.push(format!("textures: {n} unique, {:.0} MB at full size; planned: every skin's own textures at most {skin}, shared at most {shared} - {:.0} MB for the largest livery, {:.0} MB in the package",
+                    mb(full), mb(livery), mb(package)));
+            }
+            Err(e) => notes.push(format!("textures: size plan failed ({e:#}) - sizes capped as they are written")),
+        }
+    }
     let written = body::write(&mut files, &id, &stem, &k, &insts, &frame, &plan, &mut tex, &templates, game.as_ref(), default_skin.clone(), &author)?;
     notes.extend(written.notes.iter().cloned());
     let wheels = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut tex, &templates, default_skin.clone(), game.as_ref())?;
