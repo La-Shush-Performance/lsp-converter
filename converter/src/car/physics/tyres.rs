@@ -132,6 +132,28 @@ fn named_slick(name: &str) -> bool {
     n.contains("slick") && !n.contains("semi")
 }
 
+/// The game's brand-neutral slick tread (stock MX-5 ND Cup's): the look of
+/// every AC1 slick, whatever grip model it is on. The tread a car shows is its
+/// tyre textures (the actor's f18 for the default compound, each compound's
+/// entry in the `.compatibletyres` list), not its physics class, and the
+/// donor gives every compound a road tread. Found by bob76 on OverTake
+/// (13 Nov 2026): a converted Ferrari 488 Challenge Evo and 488 GT3 showed
+/// treaded road tyres on their slicks. Only the look changes: the compound
+/// files, and so the grip, stay as they were.
+const SLICK_TREAD: &str = "content\\cars\\common_assets\\parts\\tyres\\textures\\racing_generic_1\\tyre_racing_generic_1.tyretextures";
+
+/// A compound that shows a slick tread: AC1 names it a slick, or it is on a
+/// slick model (racing slicks, F1) and AC1 does not call it a semi-slick. A
+/// wet or intermediate tyre keeps its tread (the La Shush Momentum Ice's
+/// "Endurance WET").
+fn slick_look(name: &str, class: &str) -> bool {
+    let n = name.to_lowercase();
+    if ["wet", "rain", "inter"].iter().any(|w| n.contains(w)) {
+        return false;
+    }
+    named_slick(name) || (matches!(class, "racing_slicks" | "f1_2004") && !n.contains("semi"))
+}
+
 /// The EVO class directory for a compound. A wide-peaked slick takes the
 /// road model whatever its grip (scaled to AC1's later), as Kunos's EVO 190E
 /// did with the AC1 DTM tyre (`road_245_40_17`): driven 1 Nov on the 190E
@@ -531,6 +553,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     };
     let w = [c.d.cg_front, 1.0 - c.d.cg_front];
     let mut physic: Vec<(String, String)> = Vec::new();
+    let mut slick_looks: Vec<bool> = Vec::new();
     for (k, (fa, ra)) in compounds.iter().enumerate() {
         let same = (fa.width - ra.width).abs() < 1e-4 && (fa.radius - ra.radius).abs() < 1e-4 && (fa.mu_y - ra.mu_y).abs() < 1e-3;
         let slug = |s: &str| s.to_lowercase().chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' }).collect::<String>();
@@ -539,6 +562,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
         let is_slick = named_slick(&fa.name);
         let class = class_of(&fa.name, target, fa.peak);
         let slick_off_model = is_slick && class != "racing_slicks" && class != "f1_2004";
+        slick_looks.push(slick_look(&fa.name, class));
         if k == default && slick_off_model {
             let sec = if k == 0 { "FRONT".to_string() } else { format!("FRONT_{k}") };
             c.note(format!(
@@ -609,6 +633,16 @@ pub fn write(c: &mut Ctx) -> Result<()> {
     c.cd.push(10, Val::Bytes(physic[default].0.clone().into_bytes()));
     c.cd.push(11, Val::Bytes(physic[default].1.clone().into_bytes()));
     // compatible tyres: Mod_1.. in AC1 order, each with the car's tyre textures
+    // (a slick's: the game's generic slick tread, SLICK_TREAD)
+    let slick_tread = c.game.as_ref().map(|g| g.entries.iter().any(|e| e.path.eq_ignore_ascii_case(SLICK_TREAD))).unwrap_or(true);
+    let looks: Vec<bool> = slick_looks.iter().map(|s| *s && slick_tread).collect();
+    if slick_looks.iter().any(|s| *s) {
+        c.note(if slick_tread {
+            format!("physics: slick tread (the game's generic racing slick) on compound(s) {:?}; grip unchanged", (0..looks.len()).filter(|k| looks[*k]).collect::<Vec<_>>())
+        } else {
+            "physics: the game's generic slick tread is missing - slicks keep the road tread".to_string()
+        });
+    }
     let pre = format!("{}\\presets\\", c.base).to_lowercase();
     let ct: Vec<String> = c.files.map.keys().filter(|k| k.to_lowercase().starts_with(&pre) && k.to_lowercase().ends_with(".compatibletyres")).cloned().collect();
     for p in ct {
@@ -624,12 +658,31 @@ pub fn write(c: &mut Ctx) -> Result<()> {
             m.push(2, Val::Msg(e));
             let mut g = Msg::default();
             pbx::i(&mut g, 1, 5001 + k as i64);
-            if let Some(t) = &tex {
+            if looks[k] {
+                g.set_str(2, SLICK_TREAD);
+            } else if let Some(t) = &tex {
                 g.set_str(2, t);
             }
             m.push(3, Val::Msg(g));
         }
         c.files.put(&p, m.encode());
+    }
+    // the actor's tyre textures (f103 actor data, f18): the default compound's tread
+    if looks[default] {
+        let actors: Vec<String> = c.files.map.keys().filter(|k| {
+            let l = k.to_lowercase();
+            l.starts_with(&format!("{}\\", c.base).to_lowercase()) && l.ends_with(".actor") && !l[c.base.len() + 1..].contains('\\')
+        }).cloned().collect();
+        for p in actors {
+            let mut m = Msg::parse(c.files.get(&p).unwrap())?;
+            let a = m.msg_mut(103)?;
+            if a.str(18).map(|s| s.to_lowercase().ends_with(".tyretextures")).unwrap_or(false) {
+                a.set_str(18, SLICK_TREAD);
+                c.files.put(&p, m.encode());
+            } else {
+                c.note("physics: the actor names no tyre textures - its tread stays".to_string());
+            }
+        }
     }
     // the mechanical preset's default compound
     let mp: Vec<String> = c.files.map.keys().filter(|k| k.to_lowercase().starts_with(&pre) && k.to_lowercase().ends_with(".mechanicalcarpreset")).cloned().collect();
@@ -643,7 +696,7 @@ pub fn write(c: &mut Ctx) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{brake_dx, class_of, BrakeDx};
+    use super::{brake_dx, class_of, slick_look, BrakeDx};
 
     #[test]
     fn ac1_brake_grip_on_racing_slicks_only() {
@@ -656,6 +709,21 @@ mod tests {
         // test switches: the converter before the rule, and AC1's everywhere
         assert_eq!(brake_dx(BrakeDx::Template, "racing_slicks", Some(0.09)), None);
         assert_eq!(brake_dx(BrakeDx::All, "road", Some(0.05)), Some(0.05));
+    }
+
+    #[test]
+    fn slick_tread_follows_the_ac1_name_not_the_grip_model() {
+        // a wide-peaked slick on the road model still looks like a slick
+        assert!(slick_look("Slicks Soft GrpA80s", "road"));
+        assert!(slick_look("Slick SuperSoft", "racing_slicks"));
+        // an unnamed race tyre on a slick model
+        assert!(slick_look("Endurance GT3", "racing_slicks"));
+        assert!(slick_look("Spirelli Gp Super", "f1_2004"));
+        // treads stay
+        assert!(!slick_look("Endurance WET", "racing_slicks"));
+        assert!(!slick_look("VDC Semi Slick 235/285", "racing_slicks"));
+        assert!(!slick_look("Street", "road"));
+        assert!(!slick_look("Hypercar Trofeo", "hypercar"));
     }
 
     #[test]
