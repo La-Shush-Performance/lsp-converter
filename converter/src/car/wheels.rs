@@ -36,6 +36,7 @@ use crate::car::geometry::{self, Built, Geo, Inst, Section, Vert};
 use crate::car::materials::{self, Kind, RimSlot, Templates, Tex};
 use crate::files::Files;
 use crate::io::pb::Msg;
+use crate::io::texture::Image;
 
 pub struct Wheels {
     pub notes: Vec<String>,
@@ -47,6 +48,361 @@ pub struct Wheels {
     /// the default skin: the liveries give a skin its own when its rim
     /// textures differ (`skins::write`)
     pub rim_mats: Vec<(String, usize, materials::RimSlot)>,
+    /// the AC1 tyre's own artwork baked for the generated tyre (`bake_tyre`)
+    pub tyre_look: Option<TyreLook>,
+}
+
+/// The AC1 tyre's colour map baked onto the generated tyre's UVs (stock
+/// layout: u around the axle, v bead to bead), and its motion-blur twin.
+#[derive(Clone, Debug)]
+pub struct TyreLook {
+    pub colour: String,
+    pub blur: String,
+}
+
+/// Baked tyre size: half the stock 4096 x 1024 (AC1 tyre maps are 1024..2048).
+const BAKE_W: u32 = 2048;
+const BAKE_H: u32 = 512;
+/// Below this share of the baked texels covered by the AC1 tyre, the bake
+/// is dropped (a tyre made of separate parts, or mapped in a way the
+/// projection cannot follow) and the game's tread stays.
+const BAKE_MIN_COVER: f64 = 0.6;
+/// The stock tyre rubber's tone, sRGB 0..1: the median of the game's generic
+/// slick and road maps (racing_generic_1, road_1: means 0.216).
+const STOCK_RUBBER: f32 = 0.216;
+
+/// Project (axial, radius) onto a profile polyline: (segment, fraction, distance).
+fn project(prof: &[(f64, f64)], a: f64, r: f64) -> (usize, f64, f64) {
+    let mut best = (0usize, 0.0, f64::MAX);
+    for j in 0..prof.len().saturating_sub(1) {
+        let (p, q) = (prof[j], prof[j + 1]);
+        let (da, dr) = (q.0 - p.0, q.1 - p.1);
+        let l2 = (da * da + dr * dr).max(1e-12);
+        let t = (((a - p.0) * da + (r - p.1) * dr) / l2).clamp(0.0, 1.0);
+        let (x, y) = (p.0 + t * da - a, p.1 + t * dr - r);
+        let d = (x * x + y * y).sqrt();
+        if d < best.2 {
+            best = (j, t, d);
+        }
+    }
+    best
+}
+
+fn sample(img: &Image, u: f64, v: f64) -> [f32; 4] {
+    let (w, h) = (img.w as i64, img.h as i64);
+    let x = u * w as f64 - 0.5;
+    let y = v * h as f64 - 0.5;
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = ((x - x0) as f32, (y - y0) as f32);
+    let px = |xi: i64, yi: i64| -> [f32; 4] {
+        let (xi, yi) = (xi.rem_euclid(w), yi.rem_euclid(h));
+        let i = ((yi * w + xi) * 4) as usize;
+        [img.px[i] as f32, img.px[i + 1] as f32, img.px[i + 2] as f32, img.px[i + 3] as f32]
+    };
+    let (a, b, c, d) = (px(x0 as i64, y0 as i64), px(x0 as i64 + 1, y0 as i64), px(x0 as i64, y0 as i64 + 1), px(x0 as i64 + 1, y0 as i64 + 1));
+    let mut o = [0f32; 4];
+    for k in 0..4 {
+        o[k] = (a[k] * (1.0 - fx) + b[k] * fx) * (1.0 - fy) + (c[k] * (1.0 - fx) + d[k] * fx) * fy;
+    }
+    o
+}
+
+/// The AC1 tyre's own look on the generated tyre (ours). EVO draws a tyre
+/// with a texture set (`.tyretextures`) laid out on the stock UVs, and the
+/// converter's tyre is generated, so the AC1 model's sidewall artwork (the
+/// brand, the markings) was lost: a converted car showed the game's road or
+/// plain slick tread instead (bob76 on OverTake, 14 Nov 2026: "the slicks
+/// need brands and markings"). Each AC1 tyre triangle facing out of the
+/// tyre and within 20 mm of the generated profile is drawn into the stock
+/// layout: u = its angle about the axle (the lathe's), v = its place along
+/// the profile, projected onto the AC1-sized profile and read off the
+/// generated one (the same points; so the sidewall stays on the sidewall
+/// when the tread moves to the tyres.ini radius). The nearest surface wins
+/// a texel; see-through parts (decal letters) are blended over. Gaps close
+/// from their neighbours. `prof_model` / `prof`: the same profile at the
+/// AC1 model's radius and at the written one; `mid`: the tread's axial
+/// centre. None below `BAKE_MIN_COVER`.
+#[allow(clippy::too_many_arguments)]
+pub fn bake_tyre(geos: &BTreeMap<usize, Geo>, k: &Kn5, tex: &Tex, skin: Option<&std::path::Path>, prof_model: &[(f64, f64)], prof: &[(f64, f64)], mid: f64) -> Option<(Image, f64)> {
+    let mut layers: Vec<(usize, &Geo, Image, bool)> = Vec::new();
+    for (mi, g) in geos {
+        let m = &k.materials[*mi];
+        let Some((img, _, _)) = m.texture("txDiffuse").and_then(|d| tex.image(d, skin)) else { continue };
+        // see-through only as AC1 draws it: blended or alpha-tested (a tyre
+        // map's alpha can hold other data: Neonstride's, whose bake came
+        // out empty when its alpha marked it a decal)
+        layers.push((*mi, g, img, m.blend_mode == 1 || m.alpha_tested));
+    }
+    // opaque parts first, then the see-through ones over them
+    layers.sort_by_key(|x| (x.3, x.0));
+    let l: Vec<(&Geo, &Image, bool)> = layers.iter().map(|x| (x.1, &x.2, x.3)).collect();
+    bake_layers(&l, prof_model, prof, mid)
+}
+
+/// `bake_tyre` past the texture lookup: (geometry, its colour map,
+/// see-through) in drawing order.
+fn bake_layers(layers: &[(&Geo, &Image, bool)], prof_model: &[(f64, f64)], prof: &[(f64, f64)], mid: f64) -> Option<(Image, f64)> {
+    if prof_model.len() != prof.len() || prof.len() < 3 {
+        return None;
+    }
+    let mut arc = vec![0f64];
+    for w in prof.windows(2) {
+        arc.push(arc.last().unwrap() + ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt());
+    }
+    let total = arc.last().copied().unwrap_or(1.0).max(1e-9);
+    let seg_len: Vec<f64> = (0..prof.len() - 1).map(|j| arc[j + 1] - arc[j]).collect();
+    let (w, h) = (BAKE_W as usize, BAKE_H as usize);
+    let mut col = vec![[0f32; 4]; w * h];
+    let mut dist = vec![f32::MAX; w * h];
+    for &(g, img, see) in layers {
+        for t in g.idx.chunks_exact(3) {
+            let vs = [&g.verts[t[0] as usize], &g.verts[t[1] as usize], &g.verts[t[2] as usize]];
+            let mut tu = [0f64; 3];
+            let mut tv = [0f64; 3];
+            let mut dsum = 0.0;
+            let mut out = 0.0;
+            for (n, v) in vs.iter().enumerate() {
+                let (x, y, z) = (v.pos[0] as f64 - mid, v.pos[1] as f64, v.pos[2] as f64);
+                let r = (y * y + z * z).sqrt().max(1e-9);
+                tu[n] = (y.atan2(z) + std::f64::consts::PI) / std::f64::consts::TAU;
+                let (j, f, d) = project(prof_model, x, r);
+                tv[n] = (arc[j] + f * seg_len[j]) / total;
+                dsum += d;
+                // the surface faces out of the tyre: along the profile's outward normal
+                let (da, dr) = (prof_model[j + 1].0 - prof_model[j].0, prof_model[j + 1].1 - prof_model[j].1);
+                let l = (da * da + dr * dr).sqrt().max(1e-12);
+                let (na, nr) = (dr / l, -da / l);
+                let vr = (v.nrm[1] as f64 * y + v.nrm[2] as f64 * z) / r;
+                out += v.nrm[0] as f64 * na + vr * nr;
+            }
+            let d = dsum / 3.0;
+            if d > 0.02 || out / 3.0 < 0.3 {
+                continue;
+            }
+            // across the seam at u = 0 / 1
+            let umin = tu.iter().copied().fold(f64::MAX, f64::min);
+            let umax = tu.iter().copied().fold(f64::MIN, f64::max);
+            if umax - umin > 0.5 {
+                for u in tu.iter_mut() {
+                    if *u < 0.5 {
+                        *u += 1.0;
+                    }
+                }
+            }
+            let px: Vec<(f64, f64)> = (0..3).map(|n| (tu[n] * w as f64, tv[n] * h as f64)).collect();
+            let area = (px[1].0 - px[0].0) * (px[2].1 - px[0].1) - (px[2].0 - px[0].0) * (px[1].1 - px[0].1);
+            if area.abs() < 1e-9 {
+                continue;
+            }
+            let x0 = px.iter().map(|p| p.0).fold(f64::MAX, f64::min).floor() as i64;
+            let x1 = px.iter().map(|p| p.0).fold(f64::MIN, f64::max).ceil() as i64;
+            let y0 = (px.iter().map(|p| p.1).fold(f64::MAX, f64::min).floor() as i64).max(0);
+            let y1 = (px.iter().map(|p| p.1).fold(f64::MIN, f64::max).ceil() as i64).min(h as i64 - 1);
+            if x1 - x0 > w as i64 {
+                continue;
+            }
+            for yy in y0..=y1 {
+                for xx in x0..=x1 {
+                    let (cx, cy) = (xx as f64 + 0.5, yy as f64 + 0.5);
+                    let b1 = ((cx - px[0].0) * (px[2].1 - px[0].1) - (px[2].0 - px[0].0) * (cy - px[0].1)) / area;
+                    let b2 = ((px[1].0 - px[0].0) * (cy - px[0].1) - (cx - px[0].0) * (px[1].1 - px[0].1)) / area;
+                    let b0 = 1.0 - b1 - b2;
+                    if b0 < -1e-6 || b1 < -1e-6 || b2 < -1e-6 {
+                        continue;
+                    }
+                    let su = b0 * vs[0].uv[0] as f64 + b1 * vs[1].uv[0] as f64 + b2 * vs[2].uv[0] as f64;
+                    let sv = b0 * vs[0].uv[1] as f64 + b1 * vs[1].uv[1] as f64 + b2 * vs[2].uv[1] as f64;
+                    let s = sample(img, su, sv);
+                    let i = yy as usize * w + xx.rem_euclid(w as i64) as usize;
+                    if see {
+                        if dist[i] == f32::MAX {
+                            continue;
+                        }
+                        let a = s[3] / 255.0;
+                        for c in 0..3 {
+                            col[i][c] = col[i][c] * (1.0 - a) + s[c] * a;
+                        }
+                    } else if (d as f32) < dist[i] {
+                        dist[i] = d as f32;
+                        col[i] = [s[0], s[1], s[2], 255.0];
+                    }
+                }
+            }
+        }
+    }
+    let covered = dist.iter().filter(|d| **d < f32::MAX).count();
+    let cover = covered as f64 / (w * h) as f64;
+    if cover < BAKE_MIN_COVER {
+        return Some((Image { w: 0, h: 0, px: Vec::new() }, cover));
+    }
+    // close the gaps from their neighbours (u wraps), the rest the mean
+    let mut have: Vec<bool> = dist.iter().map(|d| *d < f32::MAX).collect();
+    for _ in 0..32 {
+        let mut grew = false;
+        let prev = have.clone();
+        let src = col.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if prev[i] {
+                    continue;
+                }
+                let mut acc = [0f32; 3];
+                let mut n = 0.0;
+                for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                    let yy = y as i64 + dy;
+                    if yy < 0 || yy >= h as i64 {
+                        continue;
+                    }
+                    let j = yy as usize * w + (x as i64 + dx).rem_euclid(w as i64) as usize;
+                    if prev[j] {
+                        for c in 0..3 {
+                            acc[c] += src[j][c];
+                        }
+                        n += 1.0;
+                    }
+                }
+                if n > 0.0 {
+                    col[i] = [acc[0] / n, acc[1] / n, acc[2] / n, 255.0];
+                    have[i] = true;
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let mut mean = [0f32; 3];
+    for (c, _) in col.iter().zip(&have).filter(|(_, h)| **h) {
+        for k in 0..3 {
+            mean[k] += c[k];
+        }
+    }
+    let nh = have.iter().filter(|h| **h).count().max(1) as f32;
+    let filled: Vec<[f32; 4]> = col.iter().zip(&have).map(|(c, h)| if *h { *c } else { [mean[0] / nh, mean[1] / nh, mean[2] / nh, 255.0] }).collect();
+    // the rubber to the stock tone: AC1 lights a tyre map its own way, and
+    // its maps run far darker (Momentum Ice: mean 0.084 sRGB) than every
+    // stock EVO tyre's (0.21 .. 0.25, the generic ones 0.216), which in game
+    // reads as ink black. A screen blend lifts the median (the rubber) to
+    // STOCK_RUBBER and leaves light lettering nearly as it was.
+    let mut luma: Vec<f32> = filled.iter().step_by(7).map(|c| (c[0] + c[1] + c[2]) / 765.0).collect();
+    luma.sort_by(|a, b| a.total_cmp(b));
+    let med = luma.get(luma.len() / 2).copied().unwrap_or(STOCK_RUBBER);
+    let lift = if med < STOCK_RUBBER { (STOCK_RUBBER - med) / (1.0 - med) } else { 0.0 };
+    let px: Vec<u8> = filled.iter().flat_map(|c| {
+        let s = |x: f32| ((x / 255.0 + lift - x / 255.0 * lift) * 255.0).round().clamp(0.0, 255.0) as u8;
+        [s(c[0]), s(c[1]), s(c[2]), 255]
+    }).collect();
+    Some((Image { w: BAKE_W, h: BAKE_H, px }, cover))
+}
+
+/// Both sidewalls wear the outer one's artwork, as a real tyre does. EVO
+/// draws the right-hand tyres as the same mesh turned 180 deg about the
+/// vertical ((x, z) -> (-x, -z): u -> 0.5 - u, v -> 1 - v), so their outside
+/// is the half that faces in on the left; the stock maps carry the
+/// sidewall writing twice, one band the other turned 180 deg. An AC1 tyre's
+/// inner face is often a mirror of its outer one (the tyre mirrored in the
+/// model), and baked as it is, the right-hand tyres of the 14 Nov test build
+/// (Momentum Ice) read backwards. `outer_low_v`: the outer sidewall is the
+/// v < 0.5 half (+x, a left-hand tyre in car axes, `frame`).
+pub fn outer_both_sides(img: &mut Image, outer_low_v: bool) {
+    let (w, h) = (img.w as usize, img.h as usize);
+    let src = img.px.clone();
+    for y in 0..h {
+        let inner = if outer_low_v { y >= h / 2 } else { y < h / 2 };
+        if !inner {
+            continue;
+        }
+        let sy = h - 1 - y;
+        for x in 0..w {
+            let sx = (w / 2 + w - x - 1) % w;
+            let (i, j) = ((y * w + x) * 4, (sy * w + sx) * 4);
+            img.px[i..i + 4].copy_from_slice(&src[j..j + 4]);
+        }
+    }
+}
+
+/// The spinning tyre's colour (the stock `_blur_c` is half size and smeared
+/// around the axle): half size, then a box blur along u (1/32 of a turn).
+pub fn blur_tyre(img: &Image) -> Image {
+    let half = crate::io::texture::half(img, true);
+    let (w, h) = (half.w as usize, half.h as usize);
+    let r = (w / 64).max(1) as i64;
+    let mut px = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0u32; 3];
+            for dx in -r..=r {
+                let j = (y * w + (x as i64 + dx).rem_euclid(w as i64) as usize) * 4;
+                for c in 0..3 {
+                    acc[c] += half.px[j + c] as u32;
+                }
+            }
+            let n = (2 * r + 1) as u32;
+            let i = (y * w + x) * 4;
+            for c in 0..3 {
+                px[i + c] = (acc[c] / n) as u8;
+            }
+            px[i + 3] = 255;
+        }
+    }
+    Image { w: half.w, h: half.h, px }
+}
+
+/// Every tyre texture set the car names (the actor's f103.f18 and each
+/// `.compatibletyres` entry's f2) is swapped for a car-local twin wearing
+/// the baked AC1 colour (`bake_tyre`): its colour and blur colour maps are
+/// ours, its normal and occlusion maps stay the set's own (the tread the
+/// tyre rule picked: slick, road or wet). Returns the note.
+pub fn apply_tyre_look(files: &mut Files, id: &str, look: &TyreLook, game: Option<&crate::validate::Game>) -> Result<Option<String>> {
+    let base = format!("content\\cars\\{id}");
+    let bl = base.to_lowercase();
+    let read = |files: &Files, p: &str| -> Option<Vec<u8>> { files.get(p).cloned().or_else(|| game.and_then(|g| g.read(p))) };
+    let mut twins: BTreeMap<String, String> = BTreeMap::new();
+    let mut twin = |files: &mut Files, p: &str| -> Option<String> {
+        let key = p.to_lowercase();
+        if let Some(t) = twins.get(&key) {
+            return Some(t.clone());
+        }
+        let mut m = Msg::parse(&read(files, p)?).ok()?;
+        m.set_str(5, &look.colour);
+        m.set_str(9, &look.blur);
+        let stem = key.rsplit('\\').next().unwrap_or("tyre").trim_end_matches(".tyretextures").to_string();
+        let out = format!("{base}\\texture\\tyre\\{stem}_ac1.tyretextures");
+        files.put(&out, m.encode());
+        twins.insert(key, out.clone());
+        Some(out)
+    };
+    let keys: Vec<String> = files.map.keys().cloned().collect();
+    for p in &keys {
+        let l = p.to_lowercase();
+        if !l.starts_with(&bl) {
+            continue;
+        }
+        if l.ends_with(".actor") && !l[bl.len() + 1..].contains('\\') {
+            let mut m = Msg::parse(files.get(p).unwrap())?;
+            let a = m.msg_mut(103)?;
+            if let Some(t) = a.str(18).filter(|s| s.to_lowercase().ends_with(".tyretextures")) {
+                if let Some(n) = twin(files, &t) {
+                    a.set_str(18, &n);
+                    files.put(p, m.encode());
+                }
+            }
+        } else if l.ends_with(".compatibletyres") {
+            let mut m = Msg::parse(files.get(p).unwrap())?;
+            for i in m.idx(3) {
+                let g = m.open(i)?;
+                if let Some(t) = g.str(2) {
+                    if let Some(n) = twin(files, &t) {
+                        g.set_str(2, &n);
+                    }
+                }
+            }
+            files.put(p, m.encode());
+        }
+    }
+    Ok((!twins.is_empty()).then(|| format!("wheels: the AC1 tyre's own artwork (sidewall markings) on {} tyre texture set(s); their tread normals stay", twins.len())))
 }
 
 /// One corner's rim or blur geometry in the wheel frame, by kn5 material;
@@ -460,7 +816,7 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], p
     let paths: BTreeMap<&str, (String, String)> = CORNERS.iter().map(|c| (*c, fallback(c, &rim_paths))).collect();
     if paths.values().all(|p| p.0.is_empty()) {
         notes.push("wheels: no rim geometry under WHEEL_xx - the donor rims stay".into());
-        return Ok(Wheels { notes, measured_radius: BTreeMap::new(), tyre_radius: [f.tyres[0].radius, f.tyres[1].radius], rim_mats: Vec::new() });
+        return Ok(Wheels { notes, measured_radius: BTreeMap::new(), tyre_radius: [f.tyres[0].radius, f.tyres[1].radius], rim_mats: Vec::new(), tyre_look: None });
     }
     // tyres
     let mut measured = BTreeMap::new();
@@ -468,11 +824,16 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], p
     let tyre_mat = "content\\cars\\common_assets\\parts\\tyres\\materials\\EXT_TYRE.material".to_string();
     let tyre_mat = if game.map(|g| g.has(&tyre_mat)).unwrap_or(true) { tyre_mat } else { format!("{base}\\materials\\EXT_TYRE.material") };
     let mut sizes = [(0.0, 0.0, 0.0); 2];
+    // the AC1 tyre's artwork, baked once (front axle first): one texture
+    // set serves both axles (a compound names one), v is bead to bead
+    let mut baked: Option<Image> = None;
     for (ax, (c1, c2)) in [("LF", "RF"), ("LR", "RR")].iter().enumerate() {
         let ty = f.tyres[ax];
         let mut pts = tyre_points(insts, parts, f, c1, k, h);
+        let mut src_c = *c1;
         if pts.len() < 50 {
             pts = tyre_points(insts, parts, f, c2, k, h);
+            src_c = *c2;
         }
         if !pts.is_empty() {
             let r = pts.iter().map(|p| p.1).fold(0.0, f64::max);
@@ -502,6 +863,21 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], p
             }
         }
         let prof = profile(&pts, ty.radius, ty.width, ty.rim_radius);
+        if baked.is_none() && model_size(&pts).is_some() {
+            let kr = pts.iter().map(|p| p.1).fold(0.0, f64::max);
+            let prof_model = profile(&pts, kr, ty.width, ty.rim_radius);
+            let geos = corner_geo(insts, parts, f, src_c, Kind::Tyre, k, h, 0.0);
+            let mid = tread_mid(&pts).unwrap_or(0.0);
+            match bake_tyre(&geos, k, tex, default_skin.as_ref().map(|s| s.1.as_path()), &prof_model, &prof, mid) {
+                Some((mut img, cover)) if img.w > 0 => {
+                    outer_both_sides(&mut img, src_c.starts_with('L'));
+                    notes.push(format!("wheels: AC1 tyre artwork baked from {src_c} ({:.0} % covered)", cover * 100.0));
+                    baked = Some(img);
+                }
+                Some((_, cover)) => notes.push(format!("wheels: the AC1 tyre covers only {:.0} % of the tyre texture - the game's tread stays", cover * 100.0)),
+                None => {}
+            }
+        }
         let g = lathe(&prof, 80);
         // the size label keeps tyres.ini's rim (the bead above is the model's)
         let rim_in = nominal(f.tyres[ax].rim_radius);
@@ -606,7 +982,12 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], p
     notes.push(format!("wheels: tyres {}/{}R{} front, {}/{}R{} rear; rims {} meshes", sizes[0].0, sizes[0].1, sizes[0].2, sizes[1].0, sizes[1].1, sizes[1].2,
         rim_paths.values().map(|p| (!p.0.is_empty()) as usize + (!p.1.is_empty()) as usize).sum::<usize>()));
     let rim_mats = mats.into_iter().map(|((mi, slot), p)| (p, mi, slot)).collect();
-    Ok(Wheels { notes, measured_radius: measured, tyre_radius: [f.tyres[0].radius, f.tyres[1].radius], rim_mats })
+    let tyre_look = baked.map(|img| {
+        let colour = tex.put_own(files, "texture\\tyre", "tyre_ac1_c", &img, crate::io::texture::Fmt::Bc7, true, "tyre (baked)");
+        let blur = tex.put_own(files, "texture\\tyre", "tyre_ac1_blur_c", &blur_tyre(&img), crate::io::texture::Fmt::Bc7, true, "tyre (baked)");
+        TyreLook { colour, blur }
+    });
+    Ok(Wheels { notes, measured_radius: measured, tyre_radius: [f.tyres[0].radius, f.tyres[1].radius], rim_mats, tyre_look })
 }
 
 /// The radius of a written tyre mesh (LOD0, wheel frame): max over vertices.
@@ -621,6 +1002,58 @@ pub fn mesh_radius(mesh: &[u8]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tyre whose own UVs are the stock layout bakes back to its map.
+    #[test]
+    fn bake_reproduces_a_stock_mapped_tyre() {
+        let prof = profile(&[], 0.33, 0.25, 0.23);
+        let g = lathe(&prof, 80);
+        // a map with a bright band on the +x sidewall only (v < 0.15)
+        let (w, h) = (64u32, 64u32);
+        let px: Vec<u8> = (0..w * h).flat_map(|i| { let v = (i / w) as f32 / h as f32; if v < 0.15 { [200, 200, 0, 255] } else { [20, 20, 20, 255] } }).collect();
+        let img = Image { w, h, px };
+        let (out, cover) = bake_layers(&[(&g, &img, false)], &prof, &prof, 0.0).unwrap();
+        assert!(cover > 0.95, "cover {cover}");
+        let at = |u: f64, v: f64| { let i = ((v * BAKE_H as f64) as usize * BAKE_W as usize + (u * BAKE_W as f64) as usize) * 4; [out.px[i], out.px[i + 1], out.px[i + 2]] };
+        // the band stays on the +x sidewall, yellow over lifted rubber
+        let band = at(0.3, 0.05);
+        assert!(band[0] > 190 && band[2] < 80, "band {band:?}");
+        let rubber = at(0.3, 0.5);
+        assert!((rubber[0] as f32 / 255.0 - STOCK_RUBBER).abs() < 0.03, "rubber {rubber:?}");
+        let other = at(0.3, 0.95);
+        assert!(other[0] < 100, "-x sidewall {other:?}");
+    }
+
+    /// The inner sidewall becomes the outer one turned 180 deg about the vertical.
+    #[test]
+    fn inner_sidewall_is_the_outer_turned() {
+        let (w, h) = (8u32, 4u32);
+        let mut img = Image { w, h, px: (0..w * h).flat_map(|i| [i as u8, 0, 0, 255]).collect() };
+        outer_both_sides(&mut img, true);
+        let at = |x: u32, y: u32| img.px[((y * w + x) * 4) as usize];
+        // the outer half is untouched
+        assert_eq!((at(0, 0), at(5, 1)), (0, 13));
+        // (u, v) -> (0.5 - u, 1 - v), texel centres: x -> (w/2 + w - 1 - x) % w
+        for y in 2..h {
+            for x in 0..w {
+                let (sx, sy) = ((w / 2 + w - 1 - x) % w, h - 1 - y);
+                assert_eq!(at(x, y), (sy * w + sx) as u8);
+            }
+        }
+    }
+
+    /// The inner liner (facing into the tyre) never reaches the bake.
+    #[test]
+    fn inward_faces_are_skipped() {
+        let prof = profile(&[], 0.33, 0.25, 0.23);
+        let mut g = lathe(&prof, 40);
+        for v in g.verts.iter_mut() {
+            v.nrm = [-v.nrm[0], -v.nrm[1], -v.nrm[2]];
+        }
+        let img = Image { w: 4, h: 4, px: vec![255; 64] };
+        let (out, cover) = bake_layers(&[(&g, &img, false)], &prof, &prof, 0.0).unwrap();
+        assert_eq!((out.w, cover), (0, 0.0));
+    }
 
     #[test]
     fn sparse_off_centre_tyre_has_no_groove() {

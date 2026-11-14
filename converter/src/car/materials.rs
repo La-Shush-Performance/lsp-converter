@@ -773,6 +773,15 @@ impl<'a> Tex<'a> {
         p
     }
 
+    /// A texture made by the converter (not one AC1 map) under
+    /// `<car>\<dir>\<stem>.texture`, counted in the car's budget; its path.
+    pub fn put_own(&mut self, files: &mut Files, dir: &str, stem: &str, img: &Image, fmt: Fmt, srgb: bool, src: &str) -> String {
+        let d = format!("{}\\{dir}", self.base);
+        let p = self.unique_path(&d, stem);
+        self.put(files, &p, img, fmt, srgb, src);
+        p
+    }
+
     /// `src`: the AC1 texture's relative name (the header's source path).
     fn put(&mut self, files: &mut Files, path: &str, img: &Image, fmt: Fmt, srgb: bool, src: &str) {
         let e = texture::encode(img, fmt, srgb, src);

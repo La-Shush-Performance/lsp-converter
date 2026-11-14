@@ -505,6 +505,10 @@ pub fn convert(o: &Opts) -> Result<Report> {
     notes.extend(identity::apply(&mut files, &ident, &car)?);
     let phys = physics::write(&mut files, &id, &stem, &car, &frame, o.content.as_deref(), o.profile, o.keep_brakes, o.min_lock)?;
     notes.extend(phys.notes);
+    // after the tyre rule has picked each compound's tread
+    if let Some(look) = &wheels.tyre_look {
+        notes.extend(wheels::apply_tyre_look(&mut files, &id, look, game.as_ref())?);
+    }
     let states = identity::set_final_state_pi(&mut files, &base, phys.perf)?;
     notes.push(format!("identity: garage rating {:.1} in {states} final state(s)", phys.perf));
     // sound: a failed sound stage is rolled back, the donor's (the game's shared) sounds stay
