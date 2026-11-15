@@ -636,7 +636,8 @@ fn check_rim_designs(files: &BTreeMap<String, Vec<u8>>, r: &mut Report) {
 /// car's `en.cars.loc` names `brand_<id>`. The presets carry the same
 /// string. The per-car descriptions the UI requests,
 /// `uiresources\localization\cars\<car>\en.loc` and `<mech preset>.en.loc`,
-/// are present.
+/// are present. The `.moddedcarcontent` sets `is_ai_drivable` (as every stock
+/// car), or race modes leave the car out.
 fn check_brand(files: &BTreeMap<String, Vec<u8>>, id: &str, game: &Game, r: &mut Report) {
     use crate::car::brand::{loc_rows, ui_id, ui_loc_key, Brands};
     let low: std::collections::HashMap<String, &Vec<u8>> = files.iter().map(|(k, v)| (k.to_lowercase(), v)).collect();
@@ -644,6 +645,9 @@ fn check_brand(files: &BTreeMap<String, Vec<u8>>, id: &str, game: &Game, r: &mut
     let Some(mc) = low.get(&format!("{base}{id}.moddedcarcontent")) else {
         return r.err(format!("brand: no {id}.moddedcarcontent"));
     };
+    if Msg::parse(mc).ok().and_then(|m| m.varint(crate::car::identity::MC_AI_DRIVABLE)) != Some(1) {
+        r.err("identity: the .moddedcarcontent is not AI drivable (f9 is_ai_drivable): the car is left out of races against AI and single make".into());
+    }
     let Some(name) = Msg::parse(mc).ok().and_then(|m| m.str(10)).filter(|s| !s.is_empty()) else {
         return r.err("brand: the .moddedcarcontent has no brand (f10)".into());
     };

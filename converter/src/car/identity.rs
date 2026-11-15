@@ -25,6 +25,13 @@
 //!   the PGUID {b: N} of each part and the livery linker {b: N}. Ours:
 //!   N = 0x7000_0000_0000 | (FNV-1a-64 of "<id>/<final state file>" & 0x0fff_ffff_ffff),
 //!   far above the stock numbers, stable per car and file.
+//! - AI and race modes: `.moddedcarcontent` f9 `is_ai_drivable` (bool,
+//!   ModdedCarContentData / CarContentData in the exe's descriptors). Every
+//!   one of the 71 stock cars sets it in `system\cars.table`; the game lists
+//!   only such cars where AI drives them (race against AI, single make; the
+//!   exe's "filter_only_is_ai_drivable"). The donor (the SDK sample) leaves it
+//!   out, so every conversion was practice-only. Ours: always set (every
+//!   converted car carries AI data, `physics::ai`).
 //! - The garage rating: CarFinalStateData f70 `performance_index` (f32) of
 //!   every final state. The Vehicle Hub shows it (rounded to 0.1), not the
 //!   `<id>.json` performance_indicator: with the donor's 10.178 left in,
@@ -356,6 +363,9 @@ pub fn set_final_state_ids(data: &[u8], n: u64) -> Result<Vec<u8>> {
     Ok(m.encode())
 }
 
+/// ModdedCarContentData `is_ai_drivable`: the car can be raced against AI.
+pub const MC_AI_DRIVABLE: u32 = 9;
+
 /// CarFinalStateData `performance_index`: the rating the garage shows.
 const FINAL_STATE_PI: u32 = 70;
 
@@ -385,6 +395,8 @@ pub fn apply(files: &mut Files, ident: &Identity, car: &Car) -> Result<Vec<Strin
     m.set_str(4, &ident.display);
     m.set_varint(5, ident.year as u64);
     m.set_str(10, &ident.brand_name);
+    // AI races and single make list only AI-drivable cars (as every stock car)
+    m.set_varint(MC_AI_DRIVABLE, 1);
     // the in-game filters: one CarSubCategorizations per category, as stock
     // (not the donor's fwd / front engine / hatchback / turbo)
     let cats = sub_categories(car);
