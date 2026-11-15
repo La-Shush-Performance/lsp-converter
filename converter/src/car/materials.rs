@@ -896,7 +896,8 @@ impl<'a> Tex<'a> {
     pub fn put_own(&mut self, files: &mut Files, dir: &str, stem: &str, img: &Image, fmt: Fmt, srgb: bool, src: &str) -> String {
         let d = format!("{}\\{dir}", self.base);
         let p = self.unique_path(&d, stem);
-        self.put(files, &p, img, fmt, srgb, src);
+        // colour maps are the sRGB ones (the size plan sizes them as colour)
+        self.put(files, &p, img, fmt, srgb, src, srgb);
         p
     }
 
