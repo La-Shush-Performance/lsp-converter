@@ -526,6 +526,8 @@ pub fn convert(o: &Opts) -> Result<Report> {
     // textures (nothing encoded, every file it touched rolled back), then
     // one size for every skin (`Tex::plan_caps`)
     laps.lap("plan");
+    // race cars' tyres take the GT3 slick's shape, the rest the road tyre's (wheels::stock_shaped)
+    let race_tyres = physics::profile::detect(&car).0 == physics::profile::Profile::Race;
     let mut tex = materials::Tex::new(&k, &id);
     {
         let mut m = materials::Tex::new(&k, &id);
@@ -533,7 +535,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
         files.begin();
         let measured = (|| -> Result<()> {
             let w = body::write(&mut files, &id, &stem, &k, &insts, &frame, &plan, &mut m, &templates, game.as_ref(), default_skin.clone(), &author)?;
-            let wh = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut m, &templates, default_skin.clone(), game.as_ref())?;
+            let wh = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut m, &templates, default_skin.clone(), game.as_ref(), race_tyres)?;
             belts::write(&mut files, &id, &stem, &k, &insts, &frame, &mut m, &templates, default_skin.clone())?;
             let (parts, _) = parts::write(&mut files, &base, &stem, &ident.brand, &car, &k, &insts, &frame, &plan, &part_sets, &mut m, &templates, &hints);
             let secs: Vec<skins::Section> = w.sections.iter().map(|(n, kind, mi, int, p)| skins::Section { name: n, kind: *kind, material: *mi, interior: *int, path: p }).collect();
@@ -560,7 +562,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let written = body::write(&mut files, &id, &stem, &k, &insts, &frame, &plan, &mut tex, &templates, game.as_ref(), default_skin.clone(), &author)?;
     laps.lap("body");
     notes.extend(written.notes.iter().cloned());
-    let wheels = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut tex, &templates, default_skin.clone(), game.as_ref())?;
+    let wheels = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut tex, &templates, default_skin.clone(), game.as_ref(), race_tyres)?;
     notes.extend(wheels.notes.iter().cloned());
     laps.lap("wheels");
     notes.extend(belts::write(&mut files, &id, &stem, &k, &insts, &frame, &mut tex, &templates, default_skin.clone())?);

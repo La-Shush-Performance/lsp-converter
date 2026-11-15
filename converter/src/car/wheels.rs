@@ -577,6 +577,71 @@ pub fn profile(pts: &[(f64, f64)], radius: f64, width: f64, rim_radius: f64) -> 
     mirror(&thin)
 }
 
+/// EVO's GT3 slick section (half, bead -> tread centre), normalised as
+/// `profile`'s STOCK: x / half width, (r - bead r) / (R - bead r). Measured
+/// on the stock 30/68 R18 and 325/705 R18 racing tyres (common_assets): the
+/// sidewall stands nearly straight (3 % wider than the bead at a third of its
+/// height) and turns in at the shoulder.
+const STOCK_RACING: [(f64, f64); 9] = [(0.97, 0.0), (1.0, 0.31), (0.99, 0.48), (0.955, 0.64), (0.89, 0.83), (0.82, 0.915), (0.74, 0.96), (0.37, 0.985), (0.0, 1.0)];
+/// EVO's road tyre section (the stock 215/35 R18), normalised the same way.
+const STOCK_ROAD: [(f64, f64); 10] = [(0.877, 0.0), (0.98, 0.15), (1.0, 0.186), (0.997, 0.22), (0.975, 0.67), (0.929, 0.78), (0.866, 0.87), (0.772, 0.92), (0.673, 0.96), (0.0, 1.0)];
+
+/// Points per half section of a generated tyre (the stock tyres carry about
+/// 10 per half; a few more keep the shoulder round).
+pub const SECTION_POINTS: usize = 14;
+
+/// Arc-length fractions along a half section (bead first).
+fn arc_fractions(h: &[(f64, f64)]) -> Vec<f64> {
+    let mut a = vec![0f64];
+    for w in h.windows(2) {
+        a.push(a.last().unwrap() + ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt());
+    }
+    let t = a.last().copied().unwrap_or(1.0).max(1e-12);
+    a.iter().map(|x| x / t).collect()
+}
+
+/// The point at arc fraction `t` along a half section.
+fn at_fraction(h: &[(f64, f64)], fr: &[f64], t: f64) -> (f64, f64) {
+    let j = fr.iter().rposition(|&x| x <= t).unwrap_or(0).min(h.len().saturating_sub(2));
+    let span = (fr[j + 1] - fr[j]).max(1e-12);
+    let f = ((t - fr[j]) / span).clamp(0.0, 1.0);
+    (h[j].0 + (h[j + 1].0 - h[j].0) * f, h[j].1 + (h[j + 1].1 - h[j].1) * f)
+}
+
+/// A full section (+x bead .. -x bead, symmetric) resampled to `n` points
+/// per half, evenly by arc length.
+pub fn resample(full: &[(f64, f64)], n: usize) -> Vec<(f64, f64)> {
+    let m = full.len() / 2;
+    let half = &full[..=m];
+    let fr = arc_fractions(half);
+    let h: Vec<(f64, f64)> = (0..n).map(|i| at_fraction(half, &fr, i as f64 / (n - 1) as f64)).collect();
+    mirror(&h)
+}
+
+/// The section a converted tyre is built with: EVO's own tyre shape (the GT3
+/// slick's for race cars, the road tyre's otherwise) at the model's size -
+/// its bead where the model's sits on its rim (radius and width) and the
+/// tread at `measured`'s radius (tyres.ini's) - resampled like `resample`, so
+/// point i lies as far along the section as point i of the model's own
+/// (`bake_tyre` maps the artwork by index).
+///
+/// RULE: the shape is the game's, the size the mod's. Example: the RSS GTM
+/// Mercer's AC1 tyre bulges 26 mm a side past its bead at mid-sidewall (the
+/// stock GT3 slick: 5 mm, low down); built to that shape it looked "like
+/// balloons" in EVO (bob76 on OverTake, 15 Nov 2026), once the smooth slick
+/// tread showed the bulge.
+pub fn stock_shaped(measured: &[(f64, f64)], racing: bool, n: usize) -> Vec<(f64, f64)> {
+    let m = measured.len() / 2;
+    let (bead_x, bead_r) = measured[0];
+    let top = measured[..=m].iter().map(|p| p.1).fold(0.0, f64::max);
+    let shape: &[(f64, f64)] = if racing { &STOCK_RACING } else { &STOCK_ROAD };
+    let hw = bead_x.abs() / shape[0].0;
+    let s: Vec<(f64, f64)> = shape.iter().map(|&(x, h)| (x * hw, bead_r + h * (top - bead_r))).collect();
+    let fr = arc_fractions(&s);
+    let h: Vec<(f64, f64)> = (0..n).map(|i| at_fraction(&s, &fr, i as f64 / (n - 1) as f64)).collect();
+    mirror(&h)
+}
+
 /// The convex chain of points ordered counter-clockwise around a point
 /// inside them (the profile's centre: bead first, tread centre last): every
 /// point that makes a right turn or lies on a straight line is dropped
@@ -721,7 +786,7 @@ fn assign(groups: &BTreeMap<usize, Geo>, k: &Kn5, tex: &Tex, skin: Option<&(&str
 
 /// Write rims, blur, tyres and their customisation files; point the actor at them.
 #[allow(clippy::too_many_arguments)]
-pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], parts: &[usize], f: &Frame, h: &materials::Hints, tex: &mut Tex, t: &Templates, default_skin: Option<(&str, std::path::PathBuf)>, game: Option<&crate::validate::Game>) -> Result<Wheels> {
+pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], parts: &[usize], f: &Frame, h: &materials::Hints, tex: &mut Tex, t: &Templates, default_skin: Option<(&str, std::path::PathBuf)>, game: Option<&crate::validate::Game>, racing: bool) -> Result<Wheels> {
     let base = format!("content\\cars\\{id}");
     let mut notes = Vec::new();
     // (kn5 material, slot) -> material path; the first material of a slot is
@@ -862,10 +927,17 @@ pub fn write(files: &mut Files, id: &str, stem: &str, k: &Kn5, insts: &[Inst], p
                 notes.push(format!("wheels: {axle} tyres put {ours} body vertices inside the tyre at rest; the AC1 model's own tyre has {theirs}"));
             }
         }
-        let prof = profile(&pts, ty.radius, ty.width, ty.rim_radius);
+        // the game's tyre shape at the model's size (`stock_shaped`)
+        let model_prof = profile(&pts, ty.radius, ty.width, ty.rim_radius);
+        let prof = stock_shaped(&model_prof, racing, SECTION_POINTS);
+        let model_w = model_prof.iter().map(|p| p.0.abs()).fold(0.0, f64::max) * 2.0;
+        let built_w = prof.iter().map(|p| p.0.abs()).fold(0.0, f64::max) * 2.0;
+        notes.push(format!("wheels: {axle} tyres in the game's {} tyre shape at the model's size: bead {:.0} mm wide at r {:.3} m, {:.0} mm at the widest (the AC1 model's bulges to {:.0} mm)",
+            if racing { "GT3 slick" } else { "road" }, model_prof[0].0.abs() * 2000.0, model_prof[0].1, built_w * 1000.0, model_w * 1000.0));
+        ty.width = built_w;
         if baked.is_none() && model_size(&pts).is_some() {
             let kr = pts.iter().map(|p| p.1).fold(0.0, f64::max);
-            let prof_model = profile(&pts, kr, ty.width, ty.rim_radius);
+            let prof_model = resample(&profile(&pts, kr, model_w, ty.rim_radius), SECTION_POINTS);
             let geos = corner_geo(insts, parts, f, src_c, Kind::Tyre, k, h, 0.0);
             let mid = tread_mid(&pts).unwrap_or(0.0);
             match bake_tyre(&geos, k, tex, default_skin.as_ref().map(|s| s.1.as_path()), &prof_model, &prof, mid) {
@@ -1109,6 +1181,32 @@ mod tests {
         let lo = prof.iter().map(|p| p.1).fold(f64::MAX, f64::min);
         let hi = prof.iter().map(|p| p.1).fold(0.0, f64::max);
         assert!((lo - 0.2357).abs() < 1e-3 && (hi - 0.318).abs() < 1e-6, "{lo} .. {hi}");
+    }
+
+    #[test]
+    fn ballooned_tyre_takes_the_stock_shape_at_its_size() {
+        // the RSS Mercer's front: bead 318 mm wide at r 0.231, bulging to
+        // 368 mm at mid-sidewall, tread at r 0.340
+        let half = [(0.159, 0.231), (0.176, 0.25), (0.184, 0.285), (0.178, 0.31), (0.167, 0.33), (0.12, 0.338), (0.0, 0.34)];
+        let full = mirror(&half);
+        for racing in [true, false] {
+            let p = stock_shaped(&full, racing, SECTION_POINTS);
+            assert_eq!(p.len(), 2 * SECTION_POINTS - 1, "same points as resample");
+            assert_eq!(p.len(), resample(&full, SECTION_POINTS).len());
+            // the bead stays on the model's rim; the tread at the model's radius
+            assert!((p[0].0 - 0.159).abs() < 1e-9 && (p[0].1 - 0.231).abs() < 1e-9, "{:?}", p[0]);
+            let top = p.iter().map(|q| q.1).fold(0.0, f64::max);
+            assert!((top - 0.34).abs() < 1e-9);
+            // symmetric
+            assert!((p[0].0 + p[p.len() - 1].0).abs() < 1e-9);
+            // no balloon: the widest point at most the stock bulge past the bead
+            let widest = p.iter().map(|q| q.0.abs()).fold(0.0, f64::max);
+            let max_bulge = if racing { 1.0 / 0.97 } else { 1.0 / 0.877 };
+            assert!(widest <= 0.159 * max_bulge + 1e-9, "racing {racing}: {widest}");
+            // and it is widest in the lower sidewall, not at mid-height
+            let at = p[..SECTION_POINTS].iter().find(|q| (q.0 - widest).abs() < 1e-9).unwrap().1;
+            assert!((at - 0.231) / (0.34 - 0.231) < 0.4, "racing {racing}: widest at r {at}");
+        }
     }
 
     #[test]
