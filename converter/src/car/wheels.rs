@@ -620,8 +620,9 @@ pub fn resample(full: &[(f64, f64)], n: usize) -> Vec<(f64, f64)> {
 
 /// The section a converted tyre is built with: EVO's own tyre shape (the GT3
 /// slick's for race cars, the road tyre's otherwise) at the model's size -
-/// its bead where the model's sits on its rim (radius and width) and the
-/// tread at `measured`'s radius (tyres.ini's) - resampled like `resample`, so
+/// its bead where the model's sits on its rim (radius and width), as wide
+/// as the model's at its widest, the tread at `measured`'s radius
+/// (tyres.ini's) - resampled like `resample`, so
 /// point i lies as far along the section as point i of the model's own
 /// (`bake_tyre` maps the artwork by index).
 ///
@@ -635,8 +636,14 @@ pub fn stock_shaped(measured: &[(f64, f64)], racing: bool, n: usize) -> Vec<(f64
     let (bead_x, bead_r) = measured[0];
     let top = measured[..=m].iter().map(|p| p.1).fold(0.0, f64::max);
     let shape: &[(f64, f64)] = if racing { &STOCK_RACING } else { &STOCK_ROAD };
-    let hw = bead_x.abs() / shape[0].0;
-    let s: Vec<(f64, f64)> = shape.iter().map(|&(x, h)| (x * hw, bead_r + h * (top - bead_r))).collect();
+    // as wide as the model's tyre at its widest (sized from the bead alone,
+    // the Mercer's tread came out 75 mm narrower than AC1's and the wheels
+    // sat back in their arches), never narrower than the stock shape at
+    // this bead; the bead itself stays where the model's sits
+    let model_half = measured[..=m].iter().map(|p| p.0.abs()).fold(0.0, f64::max);
+    let hw = model_half.max(bead_x.abs() / shape[0].0);
+    let mut s: Vec<(f64, f64)> = shape.iter().map(|&(x, h)| (x * hw, bead_r + h * (top - bead_r))).collect();
+    s[0].0 = bead_x.abs();
     let fr = arc_fractions(&s);
     let h: Vec<(f64, f64)> = (0..n).map(|i| at_fraction(&s, &fr, i as f64 / (n - 1) as f64)).collect();
     mirror(&h)
@@ -1199,13 +1206,16 @@ mod tests {
             assert!((top - 0.34).abs() < 1e-9);
             // symmetric
             assert!((p[0].0 + p[p.len() - 1].0).abs() < 1e-9);
-            // no balloon: the widest point at most the stock bulge past the bead
+            // as wide as the model at its widest (it fills the arch as in AC1)
             let widest = p.iter().map(|q| q.0.abs()).fold(0.0, f64::max);
-            let max_bulge = if racing { 1.0 / 0.97 } else { 1.0 / 0.877 };
-            assert!(widest <= 0.159 * max_bulge + 1e-9, "racing {racing}: {widest}");
-            // and it is widest in the lower sidewall, not at mid-height
+            assert!(widest <= 0.184 + 1e-6 && widest > 0.18, "racing {racing}: {widest}");
+            // but no balloon: widest in the lower sidewall, not at mid-height,
+            // and the tread stays wide (the stock shoulder)
             let at = p[..SECTION_POINTS].iter().find(|q| (q.0 - widest).abs() < 1e-9).unwrap().1;
             assert!((at - 0.231) / (0.34 - 0.231) < 0.4, "racing {racing}: widest at r {at}");
+            let shoulder = p[..SECTION_POINTS].iter().filter(|q| q.1 >= 0.231 + 0.83 * 0.109).map(|q| q.0).fold(0.0, f64::max);
+            // (the road tyre's shoulder is rounder than the GT3 slick's)
+            assert!(shoulder > if racing { 0.15 } else { 0.14 }, "racing {racing}: shoulder half-width {shoulder}");
         }
     }
 
