@@ -22,7 +22,7 @@
 //! MIRROR_0, SEATBELT_ON / OFF.
 
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ac1::kn5::Kn5;
 use crate::car::frame::{self, Frame, M4, CORNERS};
@@ -412,8 +412,8 @@ pub fn plan(k: &Kn5, insts: &[Inst], f: &Frame, h: &Hints, donor_ext_bones: &[Bo
     let mut bound: Vec<(String, bool)> = Vec::new();
     let named = disc_named(k, insts);
     for (ii, i) in insts.iter().enumerate() {
-        // the seat belts are meshes of their own (car::belts)
-        if crate::car::belts::belt_of(&i.path).is_some() || h.drop.contains(&i.node.to_lowercase()) {
+        // the seat belts and the CSP parts are meshes of their own (car::belts, car::parts)
+        if crate::car::belts::belt_of(&i.path).is_some() || h.drop.contains(&i.node.to_lowercase()) || h.parts.contains(&i.path.to_lowercase()) {
             continue;
         }
         let Some(m) = k.materials.get(i.material) else {
@@ -912,6 +912,9 @@ pub struct Author<'a> {
     pub files: Vec<std::path::PathBuf>,
     pub hints: &'a Hints,
     pub anim: Option<&'a crate::car::animparts::Plan>,
+    /// lower-case node names some skin hides (`inserts`): their meshes are
+    /// car parts, so the author LODs leave them out
+    pub skip: HashSet<String>,
 }
 
 /// Exterior LOD2..4 from the AC1 author LODs B, C, D where they exist (the
@@ -962,7 +965,7 @@ fn author_lods(ext: &mut Built, k0: &Kn5, p: &Plan, f: &Frame, a: &Author) -> Ve
         let mut secs: Vec<Section> = Vec::new();
         let mut lost = 0usize;
         for i in &insts {
-            if i.cockpit {
+            if i.cockpit || i.path.split('/').any(|s| a.skip.contains(&s.to_lowercase())) || a.hints.drop.contains(&i.node.to_lowercase()) {
                 continue;
             }
             let Some(m) = k.materials.get(i.material) else { continue };

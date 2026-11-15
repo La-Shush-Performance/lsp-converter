@@ -6,36 +6,33 @@
 //! LED windscreen banners this way, and hide the stock strips and banners;
 //! converted without them the wheel hub was a bare black disc.
 //!
-//! EVO's geometry is one for every livery; a livery swaps section
-//! materials. So:
-//! - every distinct insert (file content + place) is merged into LOD0 once,
-//!   its materials appended (same names, so CSP material rules still find
-//!   them) and its textures added (renamed only when a name is taken by a
-//!   different image);
-//! - the meshes a skin hides get copies of their materials (same name), so
-//!   they land in sections of their own;
-//! - `Vis` says, per material index, which skins show it. Such a section's
-//!   own material draws nothing (`materials::hidden`) and every livery (the
-//!   first one and Single Colour too) names it: its real material where the
-//!   skin shows it, `hidden` where it does not. Checked in EVO on the
-//!   Mercer: the N24 skin's own banner clean over the stock one it hides,
-//!   the other skins with their stock banner and strips and none of the
-//!   inserts. (A 4 x 4 opacity map drew the hidden sections solid black:
-//!   `materials::FLAT_TILE`.)
+//! EVO's car body is one mesh for every livery, and a livery only swaps its
+//! section materials; nothing a livery's material does hides geometry (a
+//! hidden banner drawn with a wholly transparent cut-out, coloured red as a
+//! test, showed solid red fighting the banner its skin inserts in the same
+//! place). What a livery adds or leaves out is a car part, as on stock cars
+//! (the MX-5's rollbar, the Camaro's fuel cap): its own mesh hung on a bone
+//! of the car, which a livery's visual preset lists. So:
+//! - every distinct insert (file content + place) is merged into LOD0 once
+//!   under a `CSP_INSERT_<file>` node, its materials appended (same names,
+//!   so CSP material rules still find them) and its textures added (renamed
+//!   only when a name is taken by a different image);
+//! - `assign` takes out of the body every mesh of an insert, and every mesh
+//!   a skin hides, and groups them into parts by the skins that show them
+//!   and the bone they hang on (`parts` writes them).
 //!
-//! Only the LOD0 model (the inserts' other FILE entries are author LODs);
-//! glass, mirrors and gauge glass share one section per role, so an insert
-//! there shows on every skin. EMISSIVE_LIGHT and other per-skin CSP effects
-//! are not converted.
+//! Only the LOD0 model (the inserts' other FILE entries are author LODs;
+//! hidden nodes stay out of the author LODs too). EMISSIVE_LIGHT and other
+//! per-skin CSP effects are not converted.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ac1::car::Car;
 use crate::ac1::kn5::{self, Kn5, Node, NodeKind};
 use crate::ac1::kn5_protection::{self, Kn5Bytes};
 use crate::car::fx::CspSection;
-use crate::car::materials::Kind;
+use crate::car::geometry::{Inst, Under};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Place {
@@ -62,31 +59,79 @@ pub struct Changes {
     pub notes: Vec<String>,
 }
 
-/// Material index -> the skins (folders) that show it; materials not listed
-/// show on every skin.
+/// What `apply` did to the model, for `assign`.
 #[derive(Default, Debug)]
-pub struct Vis {
-    shown: HashMap<usize, BTreeSet<String>>,
+pub struct Plan {
+    /// every skin folder
+    pub all: BTreeSet<String>,
+    /// an insert's root node (lower case) -> the skins that show it
+    pub inserts: Vec<(String, BTreeSet<String>)>,
+    /// a hidden node name (lower case) -> the skins that hide it
+    pub hides: HashMap<String, BTreeSet<String>>,
 }
 
-impl Vis {
-    /// Does `skin` show material `mat`? None: not a per-skin material.
-    pub fn shows(&self, mat: usize, kind: Kind, skin: &str) -> Option<bool> {
-        if !per_skin(kind) {
-            return None;
+/// The meshes of one car part: the skins that show it, the bone it hangs on.
+#[derive(Debug)]
+pub struct PartSet {
+    pub shown: BTreeSet<String>,
+    /// CAR_BODY, COCKPIT_HR or STEER_BASE
+    pub bone: &'static str,
+    pub insts: Vec<usize>,
+    /// what it is, for the notes
+    pub what: String,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    Insert(usize),
+    /// the skins that hide it
+    Hidden(BTreeSet<String>),
+}
+
+/// Every instance an insert brought or a skin hides, out of the body and into
+/// parts: (parts, the instance paths taken (lower case), notes). A mesh every
+/// skin hides is taken and in no part. Parts under a wheel stay in the body.
+pub fn assign(plan: &Plan, insts: &[Inst]) -> (Vec<PartSet>, HashSet<String>, Vec<String>) {
+    let mut groups: BTreeMap<(Key, &'static str), Vec<usize>> = BTreeMap::new();
+    let mut taken = HashSet::new();
+    let mut notes = Vec::new();
+    let mut gone = BTreeSet::new();
+    for (ii, i) in insts.iter().enumerate() {
+        let segs: Vec<String> = i.path.split('/').map(|s| s.to_lowercase()).collect();
+        let key = if let Some(n) = plan.inserts.iter().position(|(root, _)| segs.contains(root)) {
+            Key::Insert(n)
+        } else {
+            let hiding: BTreeSet<String> = segs.iter().filter_map(|s| plan.hides.get(s)).flatten().cloned().collect();
+            if hiding.is_empty() {
+                continue;
+            }
+            Key::Hidden(hiding)
+        };
+        if i.under != Under::Body {
+            notes.push(format!("csp: {} hangs on a wheel - kept on every skin", i.node));
+            continue;
         }
-        self.shown.get(&mat).map(|s| s.contains(skin))
+        taken.insert(i.path.to_lowercase());
+        if let Key::Hidden(h) = &key {
+            if plan.all.is_subset(h) {
+                gone.insert(i.node.clone());
+                continue;
+            }
+        }
+        let bone = if i.steer { "STEER_BASE" } else if i.cockpit { crate::car::body::INT_ROOT } else { crate::car::body::EXT_ROOT };
+        groups.entry((key, bone)).or_default().push(ii);
     }
-    pub fn is_empty(&self) -> bool {
-        self.shown.is_empty()
+    if !gone.is_empty() {
+        notes.push(format!("csp: hidden on every skin, left out: {}", gone.into_iter().collect::<Vec<_>>().join(", ")));
     }
-}
-
-/// Sections that can differ per skin: not the ones every material of a kind
-/// shares (one EXT_WINDOWS, one INT_GLASS, a section per mirror).
-fn per_skin(kind: Kind) -> bool {
-    // paint carries the livery colour (and Single Colour's layered paint)
-    !matches!(kind, Kind::Mirror | Kind::Glass | Kind::GaugeGlass | Kind::Paint)
+    let parts = groups.into_iter().map(|((key, bone), insts_of)| {
+        let (shown, what) = match &key {
+            Key::Insert(n) => (plan.inserts[*n].1.clone(), plan.inserts[*n].0.trim_start_matches("csp_insert_").to_string()),
+            Key::Hidden(h) => (plan.all.difference(h).cloned().collect(), format!("the stock parts {} hide{}", h.iter().cloned().collect::<Vec<_>>().join(", "), if h.len() == 1 { "s" } else { "" })),
+        };
+        PartSet { shown, bone, insts: insts_of, what }
+    }).collect();
+    (parts, taken, notes)
 }
 
 fn list(v: &str) -> Vec<String> {
@@ -169,19 +214,6 @@ fn stem(p: &Path) -> String {
     p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Every mesh node in DFS order, with the names of the nodes above it
-/// (itself included), as a flat list of `&mut` (one walk).
-fn meshes_mut<'n, 'a>(n: &'n mut Node<'a>, up: &mut Vec<String>, out: &mut Vec<(Vec<String>, &'n mut kn5::Mesh<'a>)>) {
-    up.push(n.name.to_lowercase());
-    if let NodeKind::Mesh(m) = &mut n.kind {
-        out.push((up.clone(), m));
-    }
-    for c in &mut n.children {
-        meshes_mut(c, up, out);
-    }
-    up.pop();
-}
-
 /// Insert `new` by `place` into the tree under `n`; false when the anchor
 /// node is not there.
 fn place_node<'a>(n: &mut Node<'a>, place: &Place, new: &mut Option<Node<'a>>) -> bool {
@@ -210,52 +242,23 @@ fn shift_materials(n: &mut Node, by: i32) {
     }
 }
 
-/// Apply the changes to LOD0: HIDE first (on the car's own nodes), then the
-/// inserts. Returns which skins show the per-skin materials.
-pub fn apply<'a>(k: &mut Kn5<'a>, ch: &'a Changes, skins: &[String]) -> (Vis, Vec<String>) {
-    let mut vis = Vis::default();
+/// Apply the changes to LOD0: the inserts placed, and which nodes each
+/// skin hides (`Plan`, for `assign`).
+pub fn apply<'a>(k: &mut Kn5<'a>, ch: &'a Changes, skins: &[String]) -> (Plan, Vec<String>) {
+    let mut plan = Plan { all: skins.iter().cloned().collect(), ..Default::default() };
     let mut notes = Vec::new();
-    let all: BTreeSet<String> = skins.iter().cloned().collect();
-    // HIDE: each hidden mesh -> the skins that hide it; meshes with the same
-    // material and the same hiding skins share one material copy
+    // HIDE: the car's own nodes (inserted ones are never hidden: CSP hides
+    // before it inserts)
     if !ch.hides.is_empty() {
-        let hide: Vec<(String, HashSet<String>)> = ch.hides.iter().map(|(s, v)| (s.clone(), v.iter().map(|n| n.to_lowercase()).collect())).collect();
-        let mut meshes = Vec::new();
-        meshes_mut(&mut k.root, &mut Vec::new(), &mut meshes);
-        let mut copies: HashMap<(i32, BTreeSet<String>), i32> = HashMap::new();
-        let mut new_mats = Vec::new();
-        let mut found: BTreeSet<String> = BTreeSet::new();
-        for (up, m) in meshes {
-            let mut by: BTreeSet<String> = BTreeSet::new();
-            for (s, names) in &hide {
-                if let Some(n) = up.iter().find(|n| names.contains(*n)) {
-                    found.insert(n.clone());
-                    by.insert(s.clone());
-                }
+        let mut names = HashSet::new();
+        node_names(&k.root, &mut names);
+        for (skin, hidden) in &ch.hides {
+            let missing: Vec<&String> = hidden.iter().filter(|n| !names.contains(&n.to_lowercase())).collect();
+            for n in hidden.iter().filter(|n| names.contains(&n.to_lowercase())) {
+                plan.hides.entry(n.to_lowercase()).or_default().insert(skin.clone());
             }
-            if by.is_empty() || m.material_id < 0 || m.material_id as usize >= k.materials.len() {
-                continue;
-            }
-            let base = k.materials.len() as i32;
-            let next = base + new_mats.len() as i32;
-            let mi = *copies.entry((m.material_id, by.clone())).or_insert_with(|| {
-                new_mats.push((k.materials[m.material_id as usize].clone(), all.difference(&by).cloned().collect::<BTreeSet<String>>()));
-                next
-            });
-            m.material_id = mi;
-        }
-        let n_copies = new_mats.len();
-        for (mat, shown) in new_mats {
-            vis.shown.insert(k.materials.len(), shown);
-            k.materials.push(mat);
-        }
-        for (skin, names) in &ch.hides {
-            let missing: Vec<&String> = names.iter().filter(|n| !found.contains(&n.to_lowercase())).collect();
-            notes.push(format!("csp: {skin}: hides {}{}", names.join(", "),
+            notes.push(format!("csp: {skin}: hides {}{}", hidden.join(", "),
                 if missing.is_empty() { String::new() } else { format!(" ({} not in the model)", missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")) }));
-        }
-        if n_copies > 0 {
-            notes.push(format!("csp: {n_copies} material copies for meshes some skins hide"));
         }
     }
     for ins in &ch.inserts {
@@ -281,15 +284,17 @@ pub fn apply<'a>(k: &mut Kn5<'a>, ch: &'a Changes, skins: &[String]) -> (Vis, Ve
                     *t = n.clone();
                 }
             }
-            vis.shown.insert(k.materials.len(), ins.skins.clone());
             k.materials.push(m);
         }
         let mut root = std::mem::replace(&mut sub.root, Node { kind: NodeKind::Other, name: String::new(), active: true, children: vec![] });
         shift_materials(&mut root, off);
-        root.name = format!("CSP_INSERT_{st}");
-        let mut n_mesh = Vec::new();
-        meshes_mut(&mut root, &mut Vec::new(), &mut n_mesh);
-        let n_mesh = n_mesh.len();
+        // one root name per insert (one file inserted at two places)
+        let mut name = format!("CSP_INSERT_{st}");
+        while plan.inserts.iter().any(|(r, _)| *r == name.to_lowercase()) {
+            name.push('_');
+        }
+        root.name = name.clone();
+        let n_mesh = count_meshes(&root);
         let mut new = Some(root);
         let skins_s = ins.skins.iter().cloned().collect::<Vec<_>>().join(", ");
         let (how, anchor) = match &ins.place {
@@ -297,33 +302,24 @@ pub fn apply<'a>(k: &mut Kn5<'a>, ch: &'a Changes, skins: &[String]) -> (Vis, Ve
             Place::In(a) => ("in", a),
         };
         if place_node(&mut k.root, &ins.place, &mut new) {
+            plan.inserts.push((name.to_lowercase(), ins.skins.clone()));
             notes.push(format!("csp: inserted {st} ({n_mesh} meshes) {how} {anchor} for {skins_s}"));
         } else {
             notes.push(format!("csp: insert {st}: no node {anchor} in the model - left out ({skins_s})"));
-            // its materials stay unused
         }
     }
-    (vis, notes)
+    (plan, notes)
 }
 
-/// Every per-skin section's own material draws nothing; the liveries that
-/// show it switch it on (`skins::write`).
-pub fn hide_default(files: &mut crate::files::Files, sections: &[(String, Kind, usize, bool, String)], vis: &Vis, default: Option<&str>,
-                    t: &crate::car::materials::Templates, id: &str) -> Vec<String> {
-    let Some(d) = default else { return vec![] };
-    let mut hidden = Vec::new();
-    for (name, kind, mi, int, path) in sections {
-        if vis.shows(*mi, *kind, d).is_some() {
-            let m = crate::car::materials::hidden(files, t, *int, id).encode();
-            files.put(path, m);
-            hidden.push(name.clone());
-        }
+fn node_names(n: &Node, out: &mut HashSet<String>) {
+    out.insert(n.name.to_lowercase());
+    for c in &n.children {
+        node_names(c, out);
     }
-    if hidden.is_empty() {
-        vec![]
-    } else {
-        vec![format!("csp: per-skin sections (drawn by the liveries that show them): {}", hidden.join(", "))]
-    }
+}
+
+fn count_meshes(n: &Node) -> usize {
+    usize::from(matches!(n.kind, NodeKind::Mesh(_))) + n.children.iter().map(count_meshes).sum::<usize>()
 }
 
 #[cfg(test)]
@@ -363,15 +359,5 @@ mod tests {
         let mut n = Some(node("NONE", vec![]));
         assert!(!place_node(&mut root, &Place::After("MISSING".into()), &mut n));
         assert!(n.is_some());
-    }
-
-    #[test]
-    fn vis_skips_shared_sections() {
-        let mut v = Vis::default();
-        v.shown.insert(3, ["b".to_string()].into_iter().collect());
-        assert_eq!(v.shows(3, Kind::Generic, "a"), Some(false));
-        assert_eq!(v.shows(3, Kind::Generic, "b"), Some(true));
-        assert_eq!(v.shows(3, Kind::Glass, "a"), None);
-        assert_eq!(v.shows(4, Kind::Generic, "a"), None);
     }
 }

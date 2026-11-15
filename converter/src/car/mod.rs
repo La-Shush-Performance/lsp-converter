@@ -27,6 +27,7 @@ pub mod leds;
 pub mod lights;
 pub mod materials;
 pub mod needles;
+pub mod parts;
 pub mod physics;
 pub mod skins;
 pub mod usersettings;
@@ -413,7 +414,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let csp_models = inserts::read(&car);
     notes.extend(csp_models.notes.iter().cloned());
     let mut k = car.kn5()?;
-    let (vis, n) = inserts::apply(&mut k, &csp_models, &car.skins);
+    let (csp_plan, n) = inserts::apply(&mut k, &csp_models, &car.skins);
     notes.extend(n);
     // details tiled as CSP draws them (its DetailScale over the kn5's)
     if let Some((_, secs)) = fx::csp_config(&car) {
@@ -431,6 +432,10 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let insts = geometry::flatten(&k, &mut notes);
     let mut hints = materials::Hints::from_data(car.ini("lights.ini"), car.ini("mirrors.ini"), skin_textures(&car));
     hints.paint = materials::paint_fallback(&k.materials, &hints);
+    // what only some skins carry: car parts, out of the body
+    let (part_sets, taken, n) = inserts::assign(&csp_plan, &insts);
+    notes.extend(n);
+    hints.parts = taken;
     // each wheel centred on its AC1 tyre (before anything places parts at it)
     notes.extend(wheels::centre_on_tyres(&mut frame, &insts, &k, &hints));
     // meshes AC1 never draws (wholly transparent cut-outs) stay out
@@ -494,7 +499,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let plan = body::plan(&k, &insts, &frame, &hints, &donor_ext, Some(&mut anim));
     notes.extend(plan.notes.iter().cloned());
     let default_skin = car.skins.first().map(|s| (s.as_str(), car.skin_dir(s)));
-    let author = body::Author { files: car.lods.iter().map(|l| l.file.clone()).collect(), hints: &hints, anim: Some(&anim) };
+    let author = body::Author { files: car.lods.iter().map(|l| l.file.clone()).collect(), hints: &hints, anim: Some(&anim), skip: csp_plan.hides.keys().cloned().collect() };
     // the texture size plan: a measuring pass over the stages that write
     // textures (nothing encoded, every file it touched rolled back), then
     // one size for every skin (`Tex::plan_caps`)
@@ -507,8 +512,9 @@ pub fn convert(o: &Opts) -> Result<Report> {
             let w = body::write(&mut files, &id, &stem, &k, &insts, &frame, &plan, &mut m, &templates, game.as_ref(), default_skin.clone(), &author)?;
             let wh = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut m, &templates, default_skin.clone(), game.as_ref())?;
             belts::write(&mut files, &id, &stem, &k, &insts, &frame, &mut m, &templates, default_skin.clone())?;
+            let (parts, _) = parts::write(&mut files, &base, &stem, &ident.brand, &car, &k, &insts, &frame, &plan, &part_sets, &mut m, &templates, &hints);
             let secs: Vec<skins::Section> = w.sections.iter().map(|(n, kind, mi, int, p)| skins::Section { name: n, kind: *kind, material: *mi, interior: *int, path: p }).collect();
-            skins::write(&mut files, &ident, &car, &k, &secs, &wh.rim_mats, &mut m, &templates, paint_tmpl.clone(), &vis)?;
+            skins::write(&mut files, &ident, &car, &k, &secs, &wh.rim_mats, &mut m, &templates, paint_tmpl.clone(), &parts)?;
             Ok(())
         })();
         files.rollback();
@@ -534,10 +540,10 @@ pub fn convert(o: &Opts) -> Result<Report> {
     notes.extend(actor_cleanup(&mut files, &id, &stem, &lamps)?);
     notes.extend(functions(&mut files, &id, &stem, &car, &k, &frame, &insts, &plan, &written.sections, &anim, &lamp_plan, &led_plan, &disp_plan)?);
     notes.extend(animparts::write(&mut files, &id, &anim)?);
-    // after the lamp / LED stages, which rewrite their sections' materials
-    notes.extend(inserts::hide_default(&mut files, &written.sections, &vis, car.skins.first().map(String::as_str), &templates, &id));
+    let (parts, n) = parts::write(&mut files, &base, &stem, &ident.brand, &car, &k, &insts, &frame, &plan, &part_sets, &mut tex, &templates, &hints);
+    notes.extend(n);
     let secs: Vec<skins::Section> = written.sections.iter().map(|(n, kind, m, int, p)| skins::Section { name: n, kind: *kind, material: *m, interior: *int, path: p }).collect();
-    let sk = skins::write(&mut files, &ident, &car, &k, &secs, &wheels.rim_mats, &mut tex, &templates, paint_tmpl, &vis)?;
+    let sk = skins::write(&mut files, &ident, &car, &k, &secs, &wheels.rim_mats, &mut tex, &templates, paint_tmpl, &parts)?;
     notes.extend(sk.notes);
     notes.extend(identity::apply(&mut files, &ident, &car)?);
     let phys = physics::write(&mut files, &id, &stem, &car, &frame, o.content.as_deref(), o.profile, o.keep_brakes, o.min_lock)?;

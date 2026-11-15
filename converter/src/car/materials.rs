@@ -136,6 +136,9 @@ pub struct Hints {
     /// lower-case node names left out of the car (AC1-only effects such as
     /// fake light cones)
     pub drop: HashSet<String>,
+    /// lower-case instance paths that are car parts (`inserts::assign`):
+    /// out of the body, in meshes of their own
+    pub parts: HashSet<String>,
     /// lower-case material names taken as the paint when no material is
     /// car paint by the usual rule (see paint_fallback)
     pub paint: HashSet<String>,
@@ -1503,56 +1506,6 @@ fn set_blend(m: &mut Msg, mode: u8, cutoff: f32) {
         1 => m.set_varint(2, 2),
         _ => m.remove(2),
     }
-}
-
-/// Side of the flat opacity maps `hidden` and `cut_out_pass` write: one
-/// whole streaming tile. At 4 x 4 the RSS Mercer's hidden exterior banner
-/// and LED strip drew solid black in game (the cut never applied), while
-/// every working cut-out has a full-size map.
-const FLAT_TILE: u32 = 256;
-
-/// A material that draws nothing: the plain template (the interior one
-/// inside) as a cut-out whose opacity map is 0 everywhere, as an AC1
-/// cut-out of alpha 0 draws (`invisible`). For a section a livery does not
-/// show (`inserts`: a CSP model only some skins insert, or one they hide).
-pub fn hidden(files: &mut Files, t: &Templates, interior: bool, id: &str) -> Msg {
-    let mut s = if interior { t.simple_int.clone() } else { t.simple.clone() };
-    let p = format!("content\\cars\\{id}\\texture\\csp_hidden.texture");
-    if files.get(&p).is_none() {
-        let img = Image { w: FLAT_TILE, h: FLAT_TILE, px: [0u8, 0, 0, 255].repeat((FLAT_TILE * FLAT_TILE) as usize) };
-        let e = texture::encode(&img, Fmt::Bc4, false, "csp_hidden.png");
-        files.put(&p, e.header);
-        files.put(&format!("{p}mips"), e.mips);
-    }
-    set_slot(&mut s, "Base_OpacityMap", &p);
-    setp(&mut s, "Base_HasOpacityMap", &[1.0]);
-    setp(&mut s, "Base_Basecolor", &[0.0, 0.0, 0.0, 0.0]);
-    set_blend(&mut s, 2, 0.5);
-    s
-}
-
-/// An opaque material as a cut-out that draws everything (an opacity map 1
-/// everywhere): what a livery switches a per-skin section (`inserts`) to,
-/// from its own `hidden`, so both are cut-outs. Cut-outs and blended
-/// materials stay as they are.
-pub fn cut_out_pass(files: &mut Files, m: &mut Msg, id: &str) {
-    if m.varint(2).is_some() || !has(m, "Base_HasOpacityMap") {
-        return;
-    }
-    let p = format!("content\\cars\\{id}\\texture\\csp_shown.texture");
-    if files.get(&p).is_none() {
-        let img = Image { w: FLAT_TILE, h: FLAT_TILE, px: [255u8, 255, 255, 255].repeat((FLAT_TILE * FLAT_TILE) as usize) };
-        let e = texture::encode(&img, Fmt::Bc4, false, "csp_shown.png");
-        files.put(&p, e.header);
-        files.put(&format!("{p}mips"), e.mips);
-    }
-    set_slot(m, "Base_OpacityMap", &p);
-    setp(m, "Base_HasOpacityMap", &[1.0]);
-    if let Some(mut c) = crate::io::material::get_prop(m, "Base_Basecolor", 4) {
-        c[3] = 0.0;
-        setp(m, "Base_Basecolor", &c);
-    }
-    set_blend(m, 2, 0.5);
 }
 
 /// The `.material` bytes of one section.
