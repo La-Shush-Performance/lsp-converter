@@ -217,6 +217,7 @@ pub async fn handle(peer: IpAddr, req: Request) -> Response {
         (true, "/api/convert/queue") => { let b = body.clone(); json_resp(200, &blocking(move || crate::convert::queue(&b)).await) }
         (true, "/api/convert/queue_clear") => json_resp(200, &crate::convert::queue_clear()),
         (true, "/api/convert/uninstall") => { let b = body.clone(); json_resp(200, &blocking(move || crate::convert::uninstall(&b)).await) }
+        (true, "/api/convert/clear_replaced") => json_resp(200, &blocking(crate::convert::clear_replaced).await),
         (false, "/api/convert/earlier") => {
             let (k, f) = (q_get(&query, "kind").unwrap_or_default(), q_get(&query, "folder").unwrap_or_default());
             json_resp(200, &blocking(move || crate::convert::earlier_api(&k, &f)).await)

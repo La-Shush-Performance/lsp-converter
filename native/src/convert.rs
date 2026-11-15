@@ -482,6 +482,7 @@ pub fn info() -> Value {
     let (t, why) = threads();
     let (total, avail) = memory();
     let gen = generated_dir();
+    let replaced = replaced_size();
     json!({
         "ok": true,
         "settings": st,
@@ -494,6 +495,8 @@ pub fn info() -> Value {
             // built from the game on the first conversion (a minute or two)
             "donor": gen.join("donor").join("stamp.txt").is_file(),
         },
+        // the undo copies in the work folder's _replaced (Setup: Clear old copies)
+        "replaced": {"cars": replaced.0, "bytes": replaced.1},
         "converter": conv.map(|p| p.to_string_lossy().into_owned()),
         "converter_rev": CONVERTER_REV,
         "threads": t, "threads_why": why,
@@ -1167,7 +1170,8 @@ pub(crate) fn place(src: &Path, dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// Take an earlier conversion `<id>.kspkg` + `<id>.json` out of a mods
-/// folder into the work folder's _replaced\<time>\ (kept, not deleted).
+/// folder into the work folder's _replaced\<time>\ (kept as an undo; older
+/// copies of the same car are pruned after, prune_replaced).
 fn retire_car(dir: &Path, id: &str, stamp: u64) -> Result<Vec<String>, String> {
     let mut moved = Vec::new();
     let keep = out_dir().join("_replaced").join(stamp.to_string());
@@ -1185,6 +1189,123 @@ fn retire_car(dir: &Path, id: &str, stamp: u64) -> Result<Vec<String>, String> {
         moved.push(p.to_string_lossy().into_owned());
     }
     Ok(moved)
+}
+
+// ----------------------------------------------------------- _replaced --
+
+/// The AC1 car folder a _replaced\<time>\ folder was made for.
+const REPLACED_SOURCE: &str = "source.txt";
+
+/// The work folder's _replaced; None when no work folder is set.
+fn replaced_dir() -> Option<PathBuf> {
+    // ⚠ only a real work folder: an unset one would be the app's own folder
+    let w = out_dir();
+    w.is_absolute().then(|| w.join("_replaced"))
+}
+
+/// The folders in _replaced, one per conversion that retired something,
+/// named by its unix time: (time, folder), oldest first. Nothing else in
+/// _replaced is ever touched.
+fn replaced_folders(root: &Path) -> Vec<(u64, PathBuf)> {
+    let mut v: Vec<(u64, PathBuf)> = std::fs::read_dir(root).into_iter().flatten().flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| {
+            let n = e.file_name().to_str()?.to_string();
+            if n.is_empty() || !n.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            Some((n.parse::<u64>().ok()?, e.path()))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+fn holds_kspkg(dir: &Path) -> bool {
+    std::fs::read_dir(dir).into_iter().flatten().flatten()
+        .any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("kspkg")))
+}
+
+/// Keep one undo per car in _replaced. The rule: after a conversion of AC1
+/// car `car` retires earlier copies into _replaced\<stamp>\, every OLDER copy
+/// of that car goes - an older folder made for the same AC1 car (its
+/// source.txt), and an older `<id>.kspkg` / `<id>.json` of any id retired
+/// now (folders from before this rule have no source.txt: they match by id
+/// only). An older folder left without a .kspkg goes too. So reconverting a
+/// car keeps only the copy it replaced last; Clear old copies (Convert page,
+/// Setup) removes the rest. Nothing is pruned when nothing was retired.
+fn prune_replaced(stamp: u64, car: &str, ids: &[String]) {
+    let Some(root) = replaced_dir() else { return };
+    let keep = root.join(stamp.to_string());
+    if !keep.is_dir() {
+        return;
+    }
+    let _ = std::fs::write(keep.join(REPLACED_SOURCE), car);
+    for (t, dir) in replaced_folders(&root) {
+        if t >= stamp {
+            continue;
+        }
+        let same_car = std::fs::read_to_string(dir.join(REPLACED_SOURCE)).is_ok_and(|c| c.trim().eq_ignore_ascii_case(car));
+        if !same_car {
+            for id in ids {
+                for ext in ["kspkg", "json"] {
+                    let p = dir.join(format!("{id}.{ext}"));
+                    if p.is_file() {
+                        match std::fs::remove_file(&p) {
+                            Ok(_) => logs::info(format!("convert: pruned older replaced copy {}", p.display())),
+                            Err(e) => logs::warn(format!("convert: could not prune {}: {e}", p.display())),
+                        }
+                    }
+                }
+            }
+        }
+        if same_car || !holds_kspkg(&dir) {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(_) => logs::info(format!("convert: pruned older replaced folder {}", dir.display())),
+                Err(e) => logs::warn(format!("convert: could not prune {}: {e}", dir.display())),
+            }
+        }
+    }
+}
+
+/// What _replaced keeps: (cars = .kspkg files, bytes in all).
+fn replaced_size() -> (u64, u64) {
+    let Some(root) = replaced_dir() else { return (0, 0) };
+    let (mut cars, mut bytes) = (0, 0);
+    for (_, d) in replaced_folders(&root) {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            if m.is_file() {
+                bytes += m.len();
+                if e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("kspkg")) {
+                    cars += 1;
+                }
+            }
+        }
+    }
+    (cars, bytes)
+}
+
+/// POST /api/convert/clear_replaced: delete every copy kept in _replaced
+/// (Convert page, Setup: Clear old copies). Not while a car converts: it
+/// retires into _replaced at its end.
+pub fn clear_replaced() -> Value {
+    if JOB.lock().unwrap().state == "running" {
+        return json!({"ok": false, "error": "a car is converting - clear the old copies when it is done"});
+    }
+    let Some(root) = replaced_dir() else { return json!({"ok": true, "freed": 0, "cars": 0, "bytes": 0}) };
+    let (_, before) = replaced_size();
+    let mut errors = Vec::new();
+    for (_, d) in replaced_folders(&root) {
+        if let Err(e) = std::fs::remove_dir_all(&d) {
+            errors.push(format!("{}: {e}", d.display()));
+        }
+    }
+    // only goes when nothing else is in it
+    let _ = std::fs::remove_dir(&root);
+    let (cars, after) = replaced_size();
+    logs::info(format!("convert: cleared old copies in {}: {} bytes freed", root.display(), before.saturating_sub(after)));
+    json!({"ok": errors.is_empty(), "freed": before.saturating_sub(after), "cars": cars, "bytes": after, "error": errors.join("; ")})
 }
 
 /// The Convert page's minimum steering lock (degrees each way, the
@@ -1293,6 +1414,10 @@ pub fn start(body: &Value) -> Value {
                         Err(e) => warn.push(format!("{what}: {e}")),
                     }
                 }
+            }
+            // one undo per car: older copies of this car in _replaced go
+            if !retired.is_empty() {
+                prune_replaced(stamp, &car, &replace);
             }
             if client && !placed.is_empty() {
                 // stale saved cameras / mirrors would override the new car's

@@ -352,6 +352,31 @@ async function convertPage() {
   row3('Converter', esc(have.aceconv ? ('aceconv' + (info.converter_rev ? ' ' + info.converter_rev : '') + ' · ' + (info.threads_why || '')) : 'missing from this build'), have.aceconv);
   row3('From your game', have.donor ? 'the donor car and templates are built'
     : 'built on the first conversion from your EVO install (a minute or two, once)', true);
+  {
+    /* the earlier conversions a new one took out of the game, kept in the work
+       folder's _replaced as an undo: one per car (the server prunes older ones) */
+    const rep = info.replaced || {};
+    const n = rep.cars || 0;
+    // (not mb(): convertPage has its own, declared further down)
+    const gb = b => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB';
+    const wrap = el('div', 'row wrap');
+    wrap.title = 'When a new conversion replaces an earlier one, the earlier car is kept in the work folder\'s _replaced as an undo: only its last copy, one per car.';
+    wrap.append(el('span', 'tiny dim', n
+      ? n + ' replaced car' + (n === 1 ? '' : 's') + ', ' + gb(rep.bytes || 0) + ' (the last copy of each, as an undo)'
+      : 'none kept'));
+    if (n || rep.bytes) {
+      const clr = el('button', 'sm', 'Clear old copies');
+      clr.onclick = async () => {
+        if (!await ask('Delete the ' + (n === 1 ? 'old copy' : n + ' old copies') + ' in the work folder\'s _replaced (' + gb(rep.bytes || 0) + ')?\n\n'
+          + 'They are earlier conversions that newer ones replaced. The cars in the game are not touched. This can\'t be undone.', 'Delete')) return;
+        const r = await api('convert/clear_replaced', {});
+        if (r && r.ok) { toast('Freed ' + gb(r.freed || 0)); convertPage(); }
+        else toast((r && r.error) || 'could not clear the old copies', true);
+      };
+      wrap.append(clr);
+    }
+    sg.append(el('div', 'tiny', 'Old copies'), wrap, el('div'));
+  }
   const srow = el('div', 'row wrap');
   const save = el('button', 'sm', 'Save');
   save.onclick = async () => {
@@ -575,7 +600,7 @@ async function convertPage() {
     const other = (list || []).filter(e => e.id !== newId);
     if (!other.length) return;
     const box = el('div', 'cv-note', '<b>Converted before</b> under another id. Replacing takes the old one out of the game'
-      + (T ? ' (its rows and folder)' : ' (kept in the work folder\'s _replaced) and resets its saved cameras') + '.');
+      + (T ? ' (its rows and folder)' : ' (its last copy kept in the work folder\'s _replaced as an undo) and resets its saved cameras') + '.');
     for (const e of other) {
       const lab = el('label', 'tiny');
       const cb = document.createElement('input');
