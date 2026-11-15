@@ -377,9 +377,30 @@ fn shadow(files: &mut Files, id: &str, car: &Car, f: &frame::Frame, body: ([f32;
     Ok(vec![note])
 }
 
+/// Wall time per stage, for the log.
+struct Laps {
+    last: std::time::Instant,
+    v: Vec<(&'static str, f64)>,
+}
+
+impl Laps {
+    fn new() -> Laps {
+        Laps { last: std::time::Instant::now(), v: Vec::new() }
+    }
+    fn lap(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.v.push((name, (now - self.last).as_secs_f64()));
+        self.last = now;
+    }
+    fn note(&self) -> String {
+        format!("timing: {}", self.v.iter().map(|(n, s)| format!("{n} {s:.1} s")).collect::<Vec<_>>().join(", "))
+    }
+}
+
 /// Convert one AC1 car.
 pub fn convert(o: &Opts) -> Result<Report> {
     let t0 = std::time::Instant::now();
+    let mut laps = Laps::new();
     let (donor_zip, refmats) = if o.donor_zip.as_os_str().is_empty() || o.refmats.as_os_str().is_empty() {
         let (d, r) = crate::batch::donor_paths()?;
         (if o.donor_zip.as_os_str().is_empty() { d } else { o.donor_zip.clone() }, if o.refmats.as_os_str().is_empty() { r } else { o.refmats.clone() })
@@ -414,6 +435,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let csp_models = inserts::read(&car);
     notes.extend(csp_models.notes.iter().cloned());
     let mut k = car.kn5()?;
+    laps.lap("model");
     let (csp_plan, n) = inserts::apply(&mut k, &csp_models, &car.skins);
     notes.extend(n);
     // details tiled as CSP draws them (its DetailScale over the kn5's)
@@ -503,6 +525,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
     // the texture size plan: a measuring pass over the stages that write
     // textures (nothing encoded, every file it touched rolled back), then
     // one size for every skin (`Tex::plan_caps`)
+    laps.lap("plan");
     let mut tex = materials::Tex::new(&k, &id);
     {
         let mut m = materials::Tex::new(&k, &id);
@@ -521,6 +544,8 @@ pub fn convert(o: &Opts) -> Result<Report> {
         match measured {
             Ok(()) => {
                 let (n, full) = m.measured();
+                let (d, ds, hit) = m.decode_stats();
+                notes.push(format!("timing: measuring pass decoded {d} images in {ds:.1} s ({hit} from the decode cache)"));
                 let (shared, skin, livery, package) = m.plan_caps(materials::TEXTURE_PLAN_BYTES, materials::TEXTURE_PACKAGE_BYTES);
                 tex.shared_cap = shared;
                 tex.skin_cap = skin;
@@ -531,20 +556,26 @@ pub fn convert(o: &Opts) -> Result<Report> {
             Err(e) => notes.push(format!("textures: size plan failed ({e:#}) - sizes capped as they are written")),
         }
     }
+    laps.lap("measure");
     let written = body::write(&mut files, &id, &stem, &k, &insts, &frame, &plan, &mut tex, &templates, game.as_ref(), default_skin.clone(), &author)?;
+    laps.lap("body");
     notes.extend(written.notes.iter().cloned());
     let wheels = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut tex, &templates, default_skin.clone(), game.as_ref())?;
     notes.extend(wheels.notes.iter().cloned());
+    laps.lap("wheels");
     notes.extend(belts::write(&mut files, &id, &stem, &k, &insts, &frame, &mut tex, &templates, default_skin.clone())?);
     let lamps: Vec<String> = written.sections.iter().filter(|s| s.1 == materials::Kind::Lamp).map(|s| s.0.clone()).collect();
     notes.extend(actor_cleanup(&mut files, &id, &stem, &lamps)?);
     notes.extend(functions(&mut files, &id, &stem, &car, &k, &frame, &insts, &plan, &written.sections, &anim, &lamp_plan, &led_plan, &disp_plan)?);
     notes.extend(animparts::write(&mut files, &id, &anim)?);
+    laps.lap("belts+functions");
     let (parts, n) = parts::write(&mut files, &base, &stem, &ident.brand, &car, &k, &insts, &frame, &plan, &part_sets, &mut tex, &templates, &hints);
     notes.extend(n);
+    laps.lap("parts");
     let secs: Vec<skins::Section> = written.sections.iter().map(|(n, kind, m, int, p)| skins::Section { name: n, kind: *kind, material: *m, interior: *int, path: p }).collect();
     let sk = skins::write(&mut files, &ident, &car, &k, &secs, &wheels.rim_mats, &mut tex, &templates, paint_tmpl, &parts)?;
     notes.extend(sk.notes);
+    laps.lap("skins");
     notes.extend(identity::apply(&mut files, &ident, &car)?);
     let phys = physics::write(&mut files, &id, &stem, &car, &frame, o.content.as_deref(), o.profile, o.keep_brakes, o.min_lock)?;
     notes.extend(phys.notes);
@@ -552,6 +583,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
     if let Some(look) = &wheels.tyre_look {
         notes.extend(wheels::apply_tyre_look(&mut files, &id, look, game.as_ref())?);
     }
+    laps.lap("physics");
     let states = identity::set_final_state_pi(&mut files, &base, phys.perf)?;
     notes.push(format!("identity: garage rating {:.1} in {states} final state(s)", phys.perf));
     // sound: a failed sound stage is rolled back, the donor's (the game's shared) sounds stay
@@ -568,6 +600,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
             }
         }
     }
+    laps.lap("sound");
     let body_bounds = {
         let ep = format!("{base}\\meshes\\{stem}_exterior.mesh");
         files.get(&ep).and_then(|b| Msg::parse(b).ok()).map(|m| {
@@ -588,6 +621,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
             notes.push(format!("driver: failed ({e:#}) - the donor's driver kept"));
         }
     }
+    laps.lap("collider+driver");
     let pruned = prune(&mut files, &id);
     notes.extend(tex.notes.iter().cloned());
     notes.push(format!("textures: {} written, {:.0} MB of mips; {} unreferenced donor files pruned", tex.count, tex.bytes as f64 / 1048576.0, pruned));
@@ -595,6 +629,10 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let pkg = crate::files::write_mod(&mut files, &o.out, &crate::files::ModMeta {
         id: &id, mech_preset: &ident.mech_preset(), display_name: &ident.display, perf, source_folder: Some(&car.folder), ac1_traction: Some(&phys.derived.ac1_traction),
     })?;
+    laps.lap("package");
+    let (d, ds, hit) = tex.decode_stats();
+    notes.push(format!("timing: decoded {d} images in {ds:.1} s ({hit} from the decode cache)"));
+    notes.push(laps.note());
     notes.push(format!("done in {:.1} s: {} files -> {}", t0.elapsed().as_secs_f64(), files.map.len(), pkg.display()));
     Ok(Report { id, package: pkg, notes })
 }

@@ -631,6 +631,9 @@ pub struct Tex<'a> {
     pub count: usize,
     pub bytes: usize,
     pub notes: Vec<String>,
+    decodes: std::cell::Cell<usize>,
+    decode_secs: std::cell::Cell<f64>,
+    hits: std::cell::Cell<usize>,
 }
 
 /// One texture the measuring pass saw (unique pixels), at the size it had
@@ -750,7 +753,7 @@ impl<'a> Tex<'a> {
             k, by_name, base: format!("content\\cars\\{id}"), done: HashMap::new(), metal_done: HashMap::new(), used_names: HashSet::new(), means: HashMap::new(),
             means_under: HashMap::new(),
             max_color: lim.min(4096), max_other: lim.min(2048), shared_cap: u32::MAX, skin_cap: u32::MAX,
-            measure: false, measured: Vec::new(), by_pixels: HashMap::new(), count: 0, bytes: 0, notes: Vec::new(),
+            measure: false, measured: Vec::new(), by_pixels: HashMap::new(), count: 0, bytes: 0, notes: Vec::new(), decodes: Default::default(), decode_secs: Default::default(), hits: Default::default(),
         }
     }
 
@@ -774,10 +777,32 @@ impl<'a> Tex<'a> {
     pub fn image(&self, name: &str, skin: Option<&Path>) -> Option<(Image, bool, u64)> {
         let (b, from_skin) = self.source(name, skin)?;
         let h = h64(&b);
-        match texture::decode_any(&b) {
-            Ok(img) if img.w > 0 && img.h > 0 => Some((img, from_skin, h)),
-            _ => None,
+        self.decode(h, &b).map(|img| (img, from_skin, h))
+    }
+
+    /// Decode a source image whose bytes hash to `h`, through the decode
+    /// cache (counted for the timing note).
+    fn decode(&self, h: u64, b: &[u8]) -> Option<Image> {
+        if let Some(img) = decode_cache_get(h) {
+            self.hits.set(self.hits.get() + 1);
+            return Some(img);
         }
+        let t = std::time::Instant::now();
+        let r = match texture::decode_any(b) {
+            Ok(img) if img.w > 0 && img.h > 0 => Some(img),
+            _ => None,
+        };
+        self.decodes.set(self.decodes.get() + 1);
+        self.decode_secs.set(self.decode_secs.get() + t.elapsed().as_secs_f64());
+        if let Some(img) = &r {
+            decode_cache_put(h, img);
+        }
+        r
+    }
+
+    /// (source images decoded, seconds spent decoding, decodes the cache saved)
+    pub fn decode_stats(&self) -> (usize, f64, usize) {
+        (self.decodes.get(), self.decode_secs.get(), self.hits.get())
     }
 
     /// The longest side for a new texture (ours): the caps above, then the
@@ -1094,11 +1119,17 @@ impl<'a> Tex<'a> {
     /// The EVO path of texture `name` in `role` (None: missing, flat or black
     /// where that means "no map"). `skin`: the skin folder that may replace it.
     pub fn get(&mut self, files: &mut Files, name: &str, role: Role, skin: Option<(&str, &Path)>) -> Option<String> {
-        let (img, from_skin, h) = self.image(name, skin.map(|s| s.1))?;
+        // the same source in the same role is done once: look it up by the
+        // source bytes before decoding them (a 4096 skin decoded again for
+        // every livery and section that names it)
+        let (b, from_skin) = self.source(name, skin.map(|s| s.1))?;
+        let h = h64(&b);
         let key = (h, role);
         if let Some(p) = self.done.get(&key) {
             return p.clone();
         }
+        let img = self.decode(h, &b)?;
+        drop(b);
         let dir = match (from_skin, skin) {
             (true, Some((sname, _))) => format!("{}\\skins\\{}", self.base, slug(sname)),
             _ => format!("{}\\texture", self.base),
@@ -2012,4 +2043,49 @@ mod tests {
         got.sort();
         assert_eq!(got, vec!["bbs_lm_paint".to_string(), "car_shdr_001".to_string()]);
     }
+}
+
+/// Decoded source images by the hash of their bytes, most recently used
+/// last, held to `ACECONV_DECODE_CACHE_MB` (default 1024; 0 = off). One
+/// conversion asked for the same few skin images thousands of times (the
+/// RSS Mercer: 2347 decodes of 275 sources per pass, about 500 of its
+/// 810 s), and the measuring pass decodes the same as the real one. Keyed
+/// by content, so a hit is always the same pixels.
+struct DecodeCache {
+    entries: Vec<(u64, std::sync::Arc<Image>)>,
+    bytes: usize,
+}
+
+static DECODE_CACHE: std::sync::Mutex<DecodeCache> = std::sync::Mutex::new(DecodeCache { entries: Vec::new(), bytes: 0 });
+
+fn decode_cache_cap() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| std::env::var("ACECONV_DECODE_CACHE_MB").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1024) << 20)
+}
+
+fn decode_cache_get(h: u64) -> Option<Image> {
+    let mut c = DECODE_CACHE.lock().ok()?;
+    let i = c.entries.iter().position(|e| e.0 == h)?;
+    let e = c.entries.remove(i);
+    let img = (*e.1).clone();
+    c.entries.push(e);
+    Some(img)
+}
+
+fn decode_cache_put(h: u64, img: &Image) {
+    let cap = decode_cache_cap();
+    let size = img.px.len();
+    if size > cap {
+        return;
+    }
+    let Ok(mut c) = DECODE_CACHE.lock() else { return };
+    if c.entries.iter().any(|e| e.0 == h) {
+        return;
+    }
+    while c.bytes + size > cap && !c.entries.is_empty() {
+        let old = c.entries.remove(0);
+        c.bytes -= old.1.px.len();
+    }
+    c.entries.push((h, std::sync::Arc::new(img.clone())));
+    c.bytes += size;
 }
