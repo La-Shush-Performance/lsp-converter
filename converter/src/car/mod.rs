@@ -22,6 +22,7 @@ pub mod frame;
 pub mod fx;
 pub mod geometry;
 pub mod identity;
+pub mod inserts;
 pub mod leds;
 pub mod lights;
 pub mod materials;
@@ -407,7 +408,13 @@ pub fn convert(o: &Opts) -> Result<Report> {
     let donor = crate::files::load_donor(&donor_zip, identity::DONOR_ID).with_context(|| format!("donor {}", donor_zip.display()))?;
     let mut files = identity::clone_donor(donor, &ident);
     let base = ident.base();
+    // CSP model changes per skin (inserted models, hidden nodes), read
+    // before the model so their bytes outlive it
+    let csp_models = inserts::read(&car);
+    notes.extend(csp_models.notes.iter().cloned());
     let mut k = car.kn5()?;
+    let (vis, n) = inserts::apply(&mut k, &csp_models, &car.skins);
+    notes.extend(n);
     // details tiled as CSP draws them (its DetailScale over the kn5's)
     if let Some((_, secs)) = fx::csp_config(&car) {
         let changed = materials::csp_detail_scale(&mut k.materials, &secs);
@@ -501,7 +508,7 @@ pub fn convert(o: &Opts) -> Result<Report> {
             let wh = wheels::write(&mut files, &id, &stem, &k, &insts, &plan.wheel_parts, &frame, &hints, &mut m, &templates, default_skin.clone(), game.as_ref())?;
             belts::write(&mut files, &id, &stem, &k, &insts, &frame, &mut m, &templates, default_skin.clone())?;
             let secs: Vec<skins::Section> = w.sections.iter().map(|(n, kind, mi, int, p)| skins::Section { name: n, kind: *kind, material: *mi, interior: *int, path: p }).collect();
-            skins::write(&mut files, &ident, &car, &k, &secs, &wh.rim_mats, &mut m, &templates, paint_tmpl.clone())?;
+            skins::write(&mut files, &ident, &car, &k, &secs, &wh.rim_mats, &mut m, &templates, paint_tmpl.clone(), &vis)?;
             Ok(())
         })();
         files.rollback();
@@ -527,8 +534,10 @@ pub fn convert(o: &Opts) -> Result<Report> {
     notes.extend(actor_cleanup(&mut files, &id, &stem, &lamps)?);
     notes.extend(functions(&mut files, &id, &stem, &car, &k, &frame, &insts, &plan, &written.sections, &anim, &lamp_plan, &led_plan, &disp_plan)?);
     notes.extend(animparts::write(&mut files, &id, &anim)?);
+    // after the lamp / LED stages, which rewrite their sections' materials
+    notes.extend(inserts::hide_default(&mut files, &written.sections, &vis, car.skins.first().map(String::as_str), &templates, &id));
     let secs: Vec<skins::Section> = written.sections.iter().map(|(n, kind, m, int, p)| skins::Section { name: n, kind: *kind, material: *m, interior: *int, path: p }).collect();
-    let sk = skins::write(&mut files, &ident, &car, &k, &secs, &wheels.rim_mats, &mut tex, &templates, paint_tmpl)?;
+    let sk = skins::write(&mut files, &ident, &car, &k, &secs, &wheels.rim_mats, &mut tex, &templates, paint_tmpl, &vis)?;
     notes.extend(sk.notes);
     notes.extend(identity::apply(&mut files, &ident, &car)?);
     let phys = physics::write(&mut files, &id, &stem, &car, &frame, o.content.as_deref(), o.profile, o.keep_brakes, o.min_lock)?;

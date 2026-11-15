@@ -228,7 +228,7 @@ pub struct Out {
 /// `paint_tmpl`: the donor's layered paint material (before the body stage
 /// replaced it).
 #[allow(clippy::too_many_arguments)]
-pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: &[Section], rim_mats: &[(String, usize, materials::RimSlot)], tex: &mut Tex, t: &Templates, paint_tmpl: Option<Msg>) -> Result<Out> {
+pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: &[Section], rim_mats: &[(String, usize, materials::RimSlot)], tex: &mut Tex, t: &Templates, paint_tmpl: Option<Msg>, vis: &crate::car::inserts::Vis) -> Result<Out> {
     let base = ident.base();
     let (id, stem) = (ident.id.as_str(), ident.stem.as_str());
     let mut notes = Vec::new();
@@ -262,6 +262,8 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
     let mut own_rims: Vec<(usize, Vec<(String, String)>)> = Vec::new();
     // (rim texture signature, map) per distinct rim set
     let mut rim_sets: Vec<(Vec<Vec<u64>>, Vec<(String, String)>)> = Vec::new();
+    // the default skin's state of every CSP-model section (slot, material): Single Colour names them too
+    let mut default_shown: Vec<(String, String)> = Vec::new();
     for li in 0..n_liv {
         let i = li + 1;
         let skin = skins.get(li);
@@ -271,6 +273,31 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
         let mut slots: Vec<(String, String, bool)> = Vec::new();
         for s in &skinnable {
             let m = &k.materials[s.material];
+            // a CSP model only some skins insert or hide (`inserts`): its own
+            // material draws nothing (`inserts::hide_default`) and EVERY
+            // livery names it - its real material where the skin shows it,
+            // `hidden` where it does not. A livery that left it out kept the
+            // state of the livery viewed before it in the showroom (the N24
+            // skin's hidden stock banner flickered against its own banner)
+            if let Some(sk) = skin {
+                if let Some(show) = vis.shows(s.material, s.kind, &sk.folder) {
+                    let p = format!("{base}\\skins\\{}\\{}.material", materials::slug(&sk.folder), s.name);
+                    let mm = if show {
+                        let inp = MatIn { kind: s.kind, m, interior: s.interior, skin: Some((sk.folder.as_str(), sk.dir.clone())), metallic: is_metallic(&sk.folder) || is_metallic(&sk.display) };
+                        let mut mm = materials::build(files, tex, t, &inp);
+                        materials::cut_out_pass(files, &mut mm, id);
+                        mm
+                    } else {
+                        materials::hidden(files, t, s.interior, id)
+                    };
+                    files.put(&p, mm.encode());
+                    if li == 0 {
+                        default_shown.push((s.name.to_string(), p.clone()));
+                    }
+                    slots.push((s.name.to_string(), p, false));
+                    continue;
+                }
+            }
             let differs = match (skin, default) {
                 (Some(sk), Some(d)) if li > 0 => signature(m, sk, tex, &mut sig_cache) != signature(m, d, tex, &mut sig_cache),
                 _ => false,
@@ -422,6 +449,9 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
         d.set_str(2, &format!("{stem} design {i}"));
         d.remove(3);
         d.push(3, Val::Msg(design_slot(ps.name, &single_mat, true, &colours)));
+        for (slot, mat) in &default_shown {
+            d.push(3, Val::Msg(design_slot(slot, mat, false, &[])));
+        }
         files.put(&design, d.encode());
         let mut cd = Msg::default();
         cd.set_str(1, &design);
@@ -435,6 +465,9 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
         v.set_str(5, &cardesign);
         v.remove(8);
         v.push(8, Val::Msg(ml_state(&single_mat, colours.first().map(|s| s.as_str()))));
+        for (_, mat) in &default_shown {
+            v.push(8, Val::Msg(ml_state(mat, None)));
+        }
         files.put(&visual, v.encode());
         let mut f = fs_tmpl.clone();
         {
@@ -445,6 +478,12 @@ pub fn write(files: &mut Files, ident: &Identity, car: &Car, k: &Kn5, sections: 
             e.set_str(1, &slot_desc(ps.name));
             e.push(2, Val::Msg(ml_state(&single_mat, colours.first().map(|s| s.as_str()))));
             body.push(3, Val::Msg(e));
+            for (slot, mat) in &default_shown {
+                let mut e = Msg::default();
+                e.set_str(1, &slot_desc(slot));
+                e.push(2, Val::Msg(ml_state(mat, None)));
+                body.push(3, Val::Msg(e));
+            }
             body.fields.sort_by_key(|x| x.num);
         }
         files.put(&fs, f.encode());
